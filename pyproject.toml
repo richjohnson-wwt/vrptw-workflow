@@ -1,0 +1,50 @@
+[project]
+name = "vrptw-workflow"
+version = "0.1.0"
+description = "PyQt6 desktop app with tabs: Parse, Geocode, Cluster"
+authors = [
+  { name = "Your Name" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.32.3",
+  "openpyxl>=3.1.5",
+  "pandas>=2.3.3",
+  "PyQt6>=6.6",
+  "xlrd>=2.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6.9",
+  "black>=24.8.0",
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+vrptw-workflow = "app.__main__:main"
+
+[build-system]
+requires = ["hatchling>=1.24.2"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "app",
+  "pyproject.toml",
+  "README.md",
+  "LICENSE*",
+  "tests",
+]
