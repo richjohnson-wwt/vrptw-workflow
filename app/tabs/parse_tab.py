@@ -176,6 +176,19 @@ class ParseTab(QWidget):
             m = re.match(r"(\d{5})", s)
             return m.group(1) if m else None
 
+        # Clean a dataframe value into a safe string: drop NaN/None/"nan" and trim
+        def clean_part(val: Any) -> str:
+            try:
+                import pandas as pd  # type: ignore
+                if pd.isna(val):
+                    return ""
+            except Exception:
+                pass
+            s = str(val).strip()
+            if not s or s.lower() == "nan":
+                return ""
+            return s
+
         # Prepare output collectors per state
         outputs: Dict[str, List[Dict[str, str]]] = {}
         total = 0
@@ -184,23 +197,24 @@ class ParseTab(QWidget):
         for _, row in df.iterrows():
             try:
                 if mapping == "JITB":
-                    loc = str(row[cols_norm["loc"]]).strip()
-                    street1 = str(row[cols_norm["street1"]]).strip()
-                    street2 = str(row.get(cols_norm.get("street2", ""), "")).strip() if cols_norm.get("street2") else ""
-                    city = str(row[cols_norm["city"]]).strip()
+                    loc = clean_part(row[cols_norm["loc"]])
+                    street1 = clean_part(row[cols_norm["street1"]])
+                    street2 = clean_part(row.get(cols_norm.get("street2", ""), "")) if cols_norm.get("street2") else ""
+                    city = clean_part(row[cols_norm["city"]])
                     state_raw = row[cols_norm["st"]]
                     zip_raw = row[cols_norm["zip"]]
-                    addr = f"{street1} {street2}".strip()
+                    # Join only non-empty parts and collapse spaces
+                    addr = " ".join(p for p in (street1, street2) if p)
                 elif mapping == "PNC":
-                    loc = str(row[cols_norm["siteid"]]).strip()
-                    addr = str(row[cols_norm["address"]]).strip()
-                    city = str(row[cols_norm["city"]]).strip()
+                    loc = clean_part(row[cols_norm["siteid"]])
+                    addr = clean_part(row[cols_norm["address"]])
+                    city = clean_part(row[cols_norm["city"]])
                     state_raw = row[cols_norm["state"]]
                     zip_raw = row[cols_norm["zip"]]
                 else:  # Ascension
-                    loc = str(row.get(cols_norm.get("lab name"), "")).strip()
-                    addr = str(row[cols_norm["address (location)"]]).strip()
-                    city = str(row[cols_norm["city"]]).strip()
+                    loc = clean_part(row.get(cols_norm.get("lab name"), ""))
+                    addr = clean_part(row[cols_norm["address (location)"]])
+                    city = clean_part(row[cols_norm["city"]])
                     state_raw = row[cols_norm["state"]]
                     zip_raw = row[cols_norm["zip code"]]
 
@@ -211,7 +225,7 @@ class ParseTab(QWidget):
                     continue
 
                 rec = {
-                    "id": loc,
+                    "id": clean_part(loc),
                     "address": addr,
                     "city": city,
                     "state": state,

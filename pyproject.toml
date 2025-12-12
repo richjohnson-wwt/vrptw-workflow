@@ -14,6 +14,8 @@ dependencies = [
   "PyQt6>=6.6",
   "xlrd>=2.0.2",
   "scikit-learn>=1.7.2",
+  "ortools>=9.14.6206",
+  "folium>=0.20.0",
 ]
 
 [project.optional-dependencies]

@@ -14,6 +14,7 @@ from .tabs.workspace_tab import WorkspaceTab
 from .tabs.parse_tab import ParseTab
 from .tabs.geocode_tab import GeocodeTab
 from .tabs.cluster_tab import ClusterTab
+from .tabs.vrptw_tab import VRPTWTab
 
 
 class MainWindow(QMainWindow):
@@ -47,11 +48,13 @@ class MainWindow(QMainWindow):
         self.parse_tab = ParseTab(self)
         self.geocode_tab = GeocodeTab(self)
         self.cluster_tab = ClusterTab(self)
+        self.vrptw_tab = VRPTWTab(self)
 
         self.tabs.addTab(self.workspace_tab, "Workspace")
         self.tabs.addTab(self.parse_tab, "Parse")
         self.tabs.addTab(self.geocode_tab, "Geocode")
         self.tabs.addTab(self.cluster_tab, "Cluster")
+        self.tabs.addTab(self.vrptw_tab, "VRPTW")
 
         # Disable other tabs until a workspace is selected
         self._set_workflow_tabs_enabled(False)
@@ -64,8 +67,8 @@ class MainWindow(QMainWindow):
         self.on_workspace_changed(str(current_path) if current_path else "")
 
     def _set_workflow_tabs_enabled(self, enabled: bool) -> None:
-        # Indices: 0 Workspace, 1 Parse, 2 Geocode, 3 Cluster
-        for idx in (1, 2, 3):
+        # Indices: 0 Workspace, 1 Parse, 2 Geocode, 3 Cluster, 4 VRPTW
+        for idx in (1, 2, 3, 4):
             self.tabs.setTabEnabled(idx, enabled)
 
     def on_workspace_changed(self, path_str: str) -> None:
@@ -76,7 +79,12 @@ class MainWindow(QMainWindow):
             self.path_display.clear()
         self._set_workflow_tabs_enabled(bool(path_str))
         # Propagate to tabs that care about workspace
-        for tab in (getattr(self, "parse_tab", None), getattr(self, "geocode_tab", None), getattr(self, "cluster_tab", None)):
+        for tab in (
+            getattr(self, "parse_tab", None),
+            getattr(self, "geocode_tab", None),
+            getattr(self, "cluster_tab", None),
+            getattr(self, "vrptw_tab", None),
+        ):
             if tab is not None and hasattr(tab, "set_workspace"):
                 try:
                     tab.set_workspace(path_str)

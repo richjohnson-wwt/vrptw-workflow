@@ -3,4 +3,5 @@ __all__ = [
     "parse_tab",
     "geocode_tab",
     "cluster_tab",
+    "vrptw_tab",
 ]
