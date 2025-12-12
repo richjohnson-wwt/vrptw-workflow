@@ -13,6 +13,7 @@ dependencies = [
   "pandas>=2.3.3",
   "PyQt6>=6.6",
   "xlrd>=2.0.2",
+  "scikit-learn>=1.7.2",
 ]
 
 [project.optional-dependencies]
