@@ -403,6 +403,15 @@ class GeocodeTab(QWidget):
     # Workspace API for MainWindow
     def set_workspace(self, path_str: str) -> None:
         # Update workspace and clear UI to prevent accidental geocoding into the wrong workspace
+        # If a worker is running, request cancel before switching context
+        try:
+            if hasattr(self, "worker") and self.worker is not None:
+                QMetaObject.invokeMethod(
+                    self.worker, "request_cancel", Qt.ConnectionType.QueuedConnection
+                )
+                self.log_append("Workspace changed: canceling active geocoding run…")
+        except Exception:
+            pass
         self.workspace = Path(path_str) if path_str else None
         # Clear logs when changing workspace (keep email persisted)
         if hasattr(self, "log"):
@@ -415,6 +424,18 @@ class GeocodeTab(QWidget):
         # Disable single-state geocode until a state is selected
         if hasattr(self, "geocode_btn"):
             self.geocode_btn.setEnabled(False)
+        # Disable geocode-all until workspace is valid and states found
+        if hasattr(self, "geocode_all_btn"):
+            try:
+                self.geocode_all_btn.setEnabled(False)
+            except Exception:
+                pass
+        # Disable cancel until a new run starts
+        if hasattr(self, "cancel_btn"):
+            try:
+                self.cancel_btn.setEnabled(False)
+            except Exception:
+                pass
         # reset progress
         if hasattr(self, "progress"):
             self.progress.setValue(0)

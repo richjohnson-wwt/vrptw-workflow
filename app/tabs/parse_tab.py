@@ -71,6 +71,11 @@ class ParseTab(QWidget):
         actions_row = QHBoxLayout()
         self.parse_btn = QPushButton("Parse")
         self.parse_btn.clicked.connect(self.on_parse)
+        # Disabled until a file is chosen to avoid stale parses
+        try:
+            self.parse_btn.setEnabled(False)
+        except Exception:
+            pass
         actions_row.addStretch(1)
         actions_row.addWidget(self.parse_btn)
         layout.addLayout(actions_row)
@@ -107,6 +112,12 @@ class ParseTab(QWidget):
             self.file_input.setText(path)
             # Populate available sheets and default to the first
             self._populate_sheet_list(path)
+            # Enable Parse now that a file is selected
+            try:
+                if hasattr(self, "parse_btn"):
+                    self.parse_btn.setEnabled(True)
+            except Exception:
+                pass
 
     def _populate_sheet_list(self, path: str) -> None:
         try:
@@ -376,6 +387,19 @@ class ParseTab(QWidget):
         self.file_input.clear()
         self.log.clear()
         self.banner.setText(f"Workspace: {path_str}" if path_str else "Workspace: (none)")
+        # Reset sheet selection and disable until a file is chosen again
+        try:
+            if hasattr(self, "sheet_combo"):
+                self.sheet_combo.clear()
+                self.sheet_combo.setEnabled(False)
+        except Exception:
+            pass
+        # Disable Parse button until user selects a new file
+        try:
+            if hasattr(self, "parse_btn"):
+                self.parse_btn.setEnabled(False)
+        except Exception:
+            pass
         # Reset view tab contents
         self.refresh_state_list()
         self.clear_table()
