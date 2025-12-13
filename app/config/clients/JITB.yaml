@@ -1,0 +1,14 @@
+name: JITB
+required_headers:
+  - loc
+  - street1
+  - city
+  - st
+  - zip
+fields:
+  id: loc
+  address:
+    join: [street1, street2]
+  city: city
+  state: st
+  zip: zip

@@ -85,6 +85,8 @@ class ClusterTab(QWidget):
         self.clear_table()
         if hasattr(self, "cluster_btn"):
             self.cluster_btn.setEnabled(False)
+        if hasattr(self, "cluster_all_btn"):
+            self.cluster_all_btn.setEnabled(False)
 
     def on_cluster(self) -> None:
         # Trigger clustering for the currently selected state
@@ -96,73 +98,91 @@ class ClusterTab(QWidget):
             QMessageBox.information(self, "Select a state", "Please select a state to cluster.")
             return
         k = int(self.k_clusters.value())
+        self._cluster_state(state, k)
+
+    def on_cluster_all(self) -> None:
+        # Trigger clustering for all states listed
+        if not self.workspace:
+            QMessageBox.warning(self, "No workspace", "Please select a workspace first.")
+            return
+        count = self.state_list.count() if hasattr(self, "state_list") else 0
+        if count == 0:
+            QMessageBox.information(self, "No states", "No states found to cluster.")
+            return
+        k = int(self.k_clusters.value())
+        states: List[str] = [self.state_list.item(i).text() for i in range(count)]
+        self.log_append(f"Clustering ALL states ({len(states)}) with k={k}…")
+        for st in states:
+            self._cluster_state(st, k)
+
+    def log_append(self, msg: str) -> None:
+        self.log.append(msg)
+        self.log.moveCursor(QTextCursor.MoveOperation.End)
+        self.log.ensureCursorVisible()
+
+    def _cluster_state(self, state: str, k: int) -> None:
+        # Internal helper to cluster a single state and update preview/logs
+        if not self.workspace:
+            return
         self.log_append(f"Clustering state {state} with k={k}…")
         state_dir = self.workspace / state
         geo_csv = state_dir / "geocoded.csv"
         out_csv = state_dir / "clustered.csv"
         if not geo_csv.exists():
             self.log_append(f"State {state}: geocoded.csv not found at {geo_csv}")
-            QMessageBox.warning(self, "Missing geocoded.csv", f"Could not find {geo_csv}")
             return
-        # Read data with pandas; do lazy import to keep app light if unused
         try:
             import pandas as pd
         except Exception as e:
             self.log_append(f"Pandas not available: {e}")
-            QMessageBox.critical(self, "Dependency missing", "pandas is required for clustering.")
             return
         try:
             from sklearn.cluster import KMeans
         except Exception as e:
             self.log_append(f"scikit-learn not available: {e}")
-            QMessageBox.critical(
-                self, "Dependency missing", "scikit-learn is required for KMeans clustering."
-            )
             return
-
         try:
             df = pd.read_csv(geo_csv)
         except Exception as e:
             self.log_append(f"Failed reading {geo_csv}: {e}")
-            QMessageBox.critical(self, "Read error", f"Failed to read {geo_csv}: {e}")
             return
-
-        # Determine lat/lon column names robustly
         cols = {c.lower(): c for c in df.columns}
         lat_col = cols.get("lat") or cols.get("latitude")
         lon_col = cols.get("lon") or cols.get("longitude")
         if not lat_col or not lon_col:
-            self.log_append(
-                "Could not find latitude/longitude columns (lat/lon or latitude/longitude)."
-            )
-            QMessageBox.warning(
-                self,
-                "Missing columns",
-                "Expected latitude/longitude columns (lat/lon or latitude/longitude).",
-            )
+            self.log_append("Could not find latitude/longitude columns (lat/lon or latitude/longitude).")
             return
-
         try:
             X = df[[lat_col, lon_col]].to_numpy()
             if len(X) == 0:
                 self.log_append(f"State {state}: no rows to cluster.")
                 return
-            k = max(1, min(k, len(X)))
-            model = KMeans(n_clusters=k, n_init="auto", random_state=42)
+            # Ensure k does not exceed the number of unique coordinate pairs to avoid ConvergenceWarning
+            try:
+                import numpy as np
+            except Exception as e:
+                self.log_append(f"NumPy not available: {e}")
+                return
+            n_unique = int(np.unique(X, axis=0).shape[0])
+            if n_unique == 0:
+                self.log_append(f"State {state}: no unique coordinate rows to cluster.")
+                return
+            k_eff = max(1, min(k, len(X), n_unique))
+            if k_eff != k:
+                self.log_append(
+                    f"State {state}: adjusted k from {k} to {k_eff} due to {n_unique} unique points."
+                )
+            model = KMeans(n_clusters=k_eff, n_init="auto", random_state=42)
             labels = model.fit_predict(X)
             df["cluster_id"] = labels
             df.to_csv(out_csv, index=False)
-            self.log_append(f"State {state}: wrote clustered.csv with {k} clusters -> {out_csv}")
-            # Reload preview on success
-            self._load_table_from_csv(out_csv)
+            self.log_append(f"State {state}: wrote clustered.csv with {k_eff} clusters -> {out_csv}")
+            # If the state is currently selected, refresh preview; otherwise leave table as-is
+            current = self.state_list.currentItem().text() if self.state_list.currentItem() else ""
+            if current == state:
+                self._load_table_from_csv(out_csv)
         except Exception as e:
             self.log_append(f"State {state}: clustering failed: {e}")
-            QMessageBox.critical(self, "Clustering failed", str(e))
-
-    def log_append(self, msg: str) -> None:
-        self.log.append(msg)
-        self.log.moveCursor(QTextCursor.MoveOperation.End)
-        self.log.ensureCursorVisible()
 
     # --- View tab helpers ---
     def _init_view_tab(self, container: QWidget) -> None:
@@ -184,10 +204,14 @@ class ClusterTab(QWidget):
         self.cluster_btn = QPushButton("Cluster")
         self.cluster_btn.setEnabled(False)
         self.cluster_btn.clicked.connect(self.on_cluster)
+        self.cluster_all_btn = QPushButton("Cluster All")
+        self.cluster_all_btn.setEnabled(False)
+        self.cluster_all_btn.clicked.connect(self.on_cluster_all)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._on_refresh_view)
         actions_row.addStretch(1)
         actions_row.addWidget(refresh_btn)
+        actions_row.addWidget(self.cluster_all_btn)
         actions_row.addWidget(self.cluster_btn)
         left_box.addLayout(actions_row)
 
@@ -220,11 +244,15 @@ class ClusterTab(QWidget):
             return
         # List subdirectories at workspace root as potential state folders
         try:
+            added = 0
             for p in sorted([d for d in self.workspace.iterdir() if d.is_dir()]):
                 # Skip hidden folders like .cache
                 if p.name.startswith("."):
                     continue
                 self.state_list.addItem(p.name)
+                added += 1
+            if hasattr(self, "cluster_all_btn"):
+                self.cluster_all_btn.setEnabled(added > 0)
         except Exception as e:
             self.log_append(f"Failed to list states in {self.workspace}: {e}")
 

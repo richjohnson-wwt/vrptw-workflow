@@ -130,32 +130,50 @@ class GeocodeWorker(QObject):
     def _nominatim_geocode(self, query: str) -> Optional[Dict[str, Any]]:
         url = "https://nominatim.openstreetmap.org/search"
         headers = {
-            "User-Agent": f"VRPTW-Workflow/0.1 (+{self.email})",
+            "User-Agent": f"VRPTW-Workflow/0.1 (contact: {self.email})",
             "Accept-Language": "en",
         }
         params = {
             "q": query,
-            "format": "json",
-            "limit": 1,
-            "addressdetails": 0,
+            "format": "jsonv2",
+            "limit": 5,
+            "addressdetails": 1,
             "countrycodes": "us,pr,gu,vi,mp,as",
-            "email": self.email,
         }
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            if not data:
-                return None
-            top = data[0]
-            return {
-                "lat": float(top.get("lat")),
-                "lon": float(top.get("lon")),
-                "display_name": str(top.get("display_name", "")),
-            }
-        except Exception:
+
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+
+        if resp.status_code != 200:
+            # log resp.status_code + resp.text[:200]
             return None
+
+        try:
+            data = resp.json()
+        except ValueError:
+            # log resp.text[:200]
+            return None
+
+        if not data:
+            return None
+
+        # Pick the best street-level match
+        for item in data:
+            if item.get("lat") and item.get("lon"):
+                if item.get("type") in ("house", "building", "residential", "yes"):
+                    return {
+                        "lat": float(item["lat"]),
+                        "lon": float(item["lon"]),
+                        "display_name": item.get("display_name", ""),
+                    }
+
+        # fallback: first valid lat/lon
+        top = data[0]
+        return {
+            "lat": float(top["lat"]),
+            "lon": float(top["lon"]),
+            "display_name": top.get("display_name", ""),
+        }
+
 
     def run(self) -> None:
         # Geocode states; emit signals instead of touching UI
@@ -183,7 +201,8 @@ class GeocodeWorker(QObject):
                         rows.append(r)
                 state_rows[state] = rows
             except Exception:
-                pass
+                self.log.emit(f"Failed to read {addr_csv}: {e}")
+                continue
 
         grand_total = sum(len(v) for v in state_rows.values())
         processed = 0
@@ -224,12 +243,9 @@ class GeocodeWorker(QObject):
                     time.sleep(1.05)  # rate limit
                     # multi-strategy
                     strategies = [(norm, "full")]
-                    no_zip = (
-                        ", ".join([address, city, st, "USA"])
-                        if zip5
-                        else ", ".join([address, city, st, "USA"])
-                    )
-                    strategies.append((no_zip, "no-zip"))
+                    no_zip = ", ".join([address, city, st, "USA"])
+                    if zip5:
+                        strategies.append((no_zip, "no-zip"))
                     terr = self._territory_full_name(st)
                     if terr:
                         strategies.append((", ".join([address, city, terr]), "territory"))
@@ -933,182 +949,6 @@ class GeocodeTab(QWidget):
             "DC": "District of Columbia",
         }
         return mapping.get(code.upper())
-
-    def _geocode_states(self, states: List[str], email: str) -> None:
-        if not self.workspace:
-            self.log_append("No workspace selected.")
-            return
-        conn = self._ensure_cache()
-        self.log_append(f"Using cache: {self._cache_path()}")
-        total_lookups = 0
-        total_cache_hits = 0
-        total_geocoded = 0
-        # Pre-read to determine total rows for progress
-        state_rows: Dict[str, List[Dict[str, str]]] = {}
-        for state in states:
-            addr_csv = self.workspace / state / "addresses.csv"
-            if not addr_csv.exists():
-                continue
-            try:
-                rows: List[Dict[str, str]] = []
-                with addr_csv.open("r", encoding="utf-8", newline="") as f:
-                    reader = csv.DictReader(f)
-                    for r in reader:
-                        rows.append(r)
-                state_rows[state] = rows
-            except Exception:
-                pass
-        grand_total = sum(len(v) for v in state_rows.values())
-        if grand_total <= 0:
-            self.progress.setValue(0)
-        else:
-            self.progress.setMaximum(grand_total)
-            self.progress.setValue(0)
-
-        processed = 0
-        for state in states:
-            addr_csv = self.workspace / state / "addresses.csv"
-            out_csv = self.workspace / state / "geocoded.csv"
-            if not addr_csv.exists():
-                self.log_append(f"State {state}: no addresses.csv found; skipping.")
-                continue
-            self.log_append(f"State {state}: reading {addr_csv}")
-            rows = state_rows.get(state, [])
-            if not rows:
-                self.log_append(f"State {state}: failed to read addresses.csv: empty or unreadable")
-                continue
-            try:
-                pass
-            except Exception as e:
-                self.log_append(f"State {state}: failed to read addresses.csv: {e}")
-                continue
-
-            out_rows: List[Dict[str, Any]] = []
-            for i, r in enumerate(rows, start=1):
-                site_id = str(r.get("id", "")).strip()
-                address = str(r.get("address", "")).strip()
-                city = str(r.get("city", "")).strip()
-                st = str(r.get("state", "")).strip()
-                zip5 = str(r.get("zip", "")).strip()
-                if not (address and city and st and zip5):
-                    continue
-                norm = self._normalize_address(address, city, st, zip5)
-                total_lookups += 1
-                cached = self._cache_get(conn, norm)
-                if cached:
-                    total_cache_hits += 1
-                    lat = cached["lat"]
-                    lon = cached["lon"]
-                    disp = cached["display_name"]
-                    # if previously cached as no result, indicate 'cache-none'
-                    source = "cache" if (lat is not None and lon is not None) else "cache-none"
-                else:
-                    # Rate limit ~1 req/sec
-                    time.sleep(1.05)
-                    # Try multiple strategies before giving up
-                    strategies = []
-                    # 1) Full with ZIP
-                    strategies.append((norm, "full"))
-                    # 2) Without ZIP
-                    norm_no_zip = (
-                        ", ".join([address, city, st, "USA"])
-                        if zip5
-                        else ", ".join([address, city, st, "USA"])
-                    )
-                    strategies.append((norm_no_zip, "no-zip"))
-                    # 3) With full territory name (if applicable)
-                    terr = self._territory_full_name(st)
-                    if terr:
-                        q3 = ", ".join([address, city, terr])
-                        strategies.append((q3, "territory"))
-                    # 4) City+State only as last resort
-                    strategies.append((f"{city}, {st}", "city-state"))
-
-                    got = None
-                    which = ""
-                    for q, label in strategies:
-                        result = self._nominatim_geocode(q, email)
-                        if result:
-                            got = result
-                            which = label
-                            break
-                        # rate limit between attempts
-                        time.sleep(1.05)
-                    if not got:
-                        lat = None
-                        lon = None
-                        disp = ""
-                        source = "miss"
-                        self._cache_put(conn, norm, lat, lon, disp, source="none")
-                    else:
-                        lat = got["lat"]
-                        lon = got["lon"]
-                        disp = got["display_name"]
-                        self._cache_put(conn, norm, lat, lon, disp, source="nominatim")
-                        total_geocoded += 1
-                        source = f"nominatim:{which}"
-                out_rows.append(
-                    {
-                        "id": site_id,
-                        "address": norm,
-                        "lat": lat if lat is not None else "",
-                        "lon": lon if lon is not None else "",
-                        "display_name": disp,
-                    }
-                )
-                processed += 1
-                if grand_total > 0:
-                    self.progress.setValue(processed)
-                # Log per-site progress and keep UI responsive
-                if lat is not None and lon is not None:
-                    self.log_append(
-                        f"State {state}: [{i}/{len(rows)}] {site_id} -> {lat:.6f},{lon:.6f} ({source})"
-                    )
-                else:
-                    self.log_append(
-                        f"State {state}: [{i}/{len(rows)}] {site_id} -> no result ({source})"
-                    )
-                QCoreApplication.processEvents()
-                if i % 25 == 0:
-                    self.log_append(f"State {state}: processed {i}/{len(rows)}")
-                # If this is the last row for the state, write outputs now
-                if i == len(rows):
-                    try:
-                        out_dir = self.workspace / state
-                        out_dir.mkdir(parents=True, exist_ok=True)
-                        out_csv = out_dir / "geocoded.csv"
-                        self.log_append(f"State {state}: writing {len(out_rows)} rows to {out_csv}")
-                        with out_csv.open("w", encoding="utf-8", newline="") as f:
-                            writer = csv.DictWriter(
-                                f, fieldnames=["id", "address", "lat", "lon", "display_name"]
-                            )
-                            writer.writeheader()
-                            writer.writerows(out_rows)
-                        self.log_append(f"State {state}: wrote {len(out_rows)} rows to {out_csv}")
-                        # Auto-refresh list/status and table if this state is selected
-                        try:
-                            current = (
-                                self.state_list.currentItem().text()
-                                if self.state_list.currentItem()
-                                else ""
-                            )
-                            self.refresh_state_list()
-                            # Restore selection and refresh counters
-                            if current:
-                                items = self.state_list.findItems(
-                                    current, Qt.MatchFlag.MatchExactly
-                                )
-                                if items:
-                                    self.state_list.setCurrentItem(items[0])
-                                    self._update_state_site_count(current)
-                                    self._update_state_geocode_status(current)
-                                # Reload table if the just-finished state is currently selected
-                                if current == state:
-                                    self.on_state_selected(state)
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        self.log_append(f"State {state}: failed writing geocoded.csv: {e}")
 
     def on_clear_cache(self) -> None:
         # Clear the shared SQLite cache and refresh UI. Do not reference geocoding counters here.

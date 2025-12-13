@@ -1,0 +1,13 @@
+name: PNC
+required_headers:
+  - siteid
+  - address
+  - city
+  - state
+  - zip
+fields:
+  id: siteid
+  address: address
+  city: city
+  state: state
+  zip: zip

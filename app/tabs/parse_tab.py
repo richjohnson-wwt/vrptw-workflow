@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QComboBox,
     QPushButton,
     QSizePolicy,
     QTableWidget,
@@ -56,6 +57,16 @@ class ParseTab(QWidget):
         file_row.addWidget(browse_btn)
         layout.addLayout(file_row)
 
+        # Sheet selection row (populated after choosing a file)
+        sheet_row = QHBoxLayout()
+        sheet_label = QLabel("Sheet:")
+        self.sheet_combo = QComboBox()
+        self.sheet_combo.setEditable(False)
+        self.sheet_combo.setEnabled(False)
+        sheet_row.addWidget(sheet_label)
+        sheet_row.addWidget(self.sheet_combo, 1)
+        layout.addLayout(sheet_row)
+
         # Actions
         actions_row = QHBoxLayout()
         self.parse_btn = QPushButton("Parse")
@@ -94,6 +105,29 @@ class ParseTab(QWidget):
         )
         if path:
             self.file_input.setText(path)
+            # Populate available sheets and default to the first
+            self._populate_sheet_list(path)
+
+    def _populate_sheet_list(self, path: str) -> None:
+        try:
+            import pandas as pd  # type: ignore
+
+            xls = pd.ExcelFile(path, engine="openpyxl")
+            sheets = xls.sheet_names
+        except Exception as e:
+            # Disable and clear on error
+            if hasattr(self, "sheet_combo"):
+                self.sheet_combo.clear()
+                self.sheet_combo.setEnabled(False)
+            self.log_append(f"Failed to list sheets: {e}")
+            return
+        # Populate combo
+        self.sheet_combo.clear()
+        for name in sheets:
+            self.sheet_combo.addItem(str(name))
+        self.sheet_combo.setEnabled(bool(sheets))
+        if sheets:
+            self.sheet_combo.setCurrentIndex(0)
 
     def on_parse(self) -> None:
         path = self.file_input.text().strip()
@@ -113,7 +147,12 @@ class ParseTab(QWidget):
             return
 
         try:
-            df = pd.read_excel(path, engine="openpyxl")
+            # Use selected sheet if available; otherwise default to first sheet (index 0)
+            if hasattr(self, "sheet_combo") and self.sheet_combo.isEnabled() and self.sheet_combo.count() > 0:
+                selected_sheet = self.sheet_combo.currentText() or 0
+            else:
+                selected_sheet = 0
+            df = pd.read_excel(path, engine="openpyxl", sheet_name=selected_sheet)
         except Exception as e:
             self.log_append(f"Failed to read Excel file: {e}")
             return
@@ -125,17 +164,39 @@ class ParseTab(QWidget):
         def has_cols(required: List[str]) -> bool:
             return all(rc in cols_norm for rc in required)
 
-        # Detect client schema and map to standard fields
+        # Detect client schema and map to standard fields via external YAML only
         mapping: Optional[str] = None
-        if has_cols(["loc", "street1", "city", "st", "zip"]):
-            mapping = "JITB"
-        elif has_cols(["siteid", "address", "city", "state", "zip"]):
-            mapping = "PNC"
-        elif has_cols(["lab name", "address (location)", "city", "state", "zip code"]):
-            mapping = "Ascension"
+        mapping_def: Optional[Dict[str, Any]] = None
+        try:
+            from pathlib import Path as _Path
+            import yaml  # type: ignore
+
+            base_dir = _Path(__file__).resolve().parent.parent / "config" / "clients"
+            client_defs: List[Dict[str, Any]] = []
+            if not base_dir.exists():
+                self.log_append(f"Client definitions folder not found: {base_dir}")
+            else:
+                for yml in sorted(base_dir.glob("*.yaml")):
+                    try:
+                        with yml.open("r", encoding="utf-8") as f:
+                            data = yaml.safe_load(f) or {}
+                        name = str(data.get("name", "")).strip()
+                        required = [str(x).strip().lower() for x in (data.get("required_headers") or [])]
+                        fields = data.get("fields", {})
+                        if name and required:
+                            client_defs.append({"name": name, "required": required, "fields": fields})
+                    except Exception as e:
+                        self.log_append(f"Skipping client YAML {yml.name}: {e}")
+            for cdef in client_defs:
+                if has_cols(cdef["required"]):
+                    mapping = cdef["name"]
+                    mapping_def = cdef
+                    break
+        except Exception as e:
+            self.log_append(f"Failed to load client definitions: {e}")
 
         if not mapping:
-            self.log_append("Could not detect known schema (JITB/PNC/Ascension) from headers.")
+            self.log_append("Could not detect a client schema from headers.")
             self.log_append(f"Columns found: {original_cols}")
             return
 
@@ -236,31 +297,31 @@ class ParseTab(QWidget):
 
         for _, row in df.iterrows():
             try:
-                if mapping == "JITB":
-                    loc = clean_part(row[cols_norm["loc"]])
-                    street1 = clean_part(row[cols_norm["street1"]])
-                    street2 = (
-                        clean_part(row.get(cols_norm.get("street2", ""), ""))
-                        if cols_norm.get("street2")
-                        else ""
-                    )
-                    city = clean_part(row[cols_norm["city"]])
-                    state_raw = row[cols_norm["st"]]
-                    zip_raw = row[cols_norm["zip"]]
-                    # Join only non-empty parts and collapse spaces
-                    addr = " ".join(p for p in (street1, street2) if p)
-                elif mapping == "PNC":
-                    loc = clean_part(row[cols_norm["siteid"]])
-                    addr = clean_part(row[cols_norm["address"]])
-                    city = clean_part(row[cols_norm["city"]])
-                    state_raw = row[cols_norm["state"]]
-                    zip_raw = row[cols_norm["zip"]]
-                else:  # Ascension
-                    loc = clean_part(row.get(cols_norm.get("lab name"), ""))
-                    addr = clean_part(row[cols_norm["address (location)"]])
-                    city = clean_part(row[cols_norm["city"]])
-                    state_raw = row[cols_norm["state"]]
-                    zip_raw = row[cols_norm["zip code"]]
+                # Use YAML-defined field mapping to extract row values
+                def get_field_value(spec: Any) -> str:
+                    # spec can be a string (column key) or a dict with join: [keys]
+                    try:
+                        if isinstance(spec, str):
+                            key = spec.strip().lower()
+                            col = cols_norm.get(key)
+                            return clean_part(row[col]) if col in row else ""
+                        if isinstance(spec, dict) and "join" in spec:
+                            parts: list[str] = []
+                            for k in spec.get("join", []):
+                                key = str(k).strip().lower()
+                                col = cols_norm.get(key)
+                                parts.append(clean_part(row[col]) if col in row else "")
+                            return " ".join(p for p in parts if p)
+                    except Exception:
+                        return ""
+                    return ""
+
+                fields = (mapping_def or {}).get("fields", {}) if mapping_def else {}
+                loc = get_field_value(fields.get("id", ""))
+                addr = get_field_value(fields.get("address", ""))
+                city = get_field_value(fields.get("city", ""))
+                state_raw = get_field_value(fields.get("state", ""))
+                zip_raw = get_field_value(fields.get("zip", ""))
 
                 state = norm_state(state_raw)
                 zip5 = norm_zip(zip_raw)
