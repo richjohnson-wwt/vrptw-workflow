@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+import webbrowser
 
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
@@ -124,6 +125,13 @@ class ClusterTab(QWidget):
         # Internal helper to cluster a single state and update preview/logs
         if not self.workspace:
             return
+        # Apply per-state override if available
+        try:
+            k_pref = self._get_state_k(state)
+            if k_pref:
+                k = int(k_pref)
+        except Exception:
+            pass
         self.log_append(f"Clustering state {state} with k={k}…")
         state_dir = self.workspace / state
         geo_csv = state_dir / "geocoded.csv"
@@ -177,6 +185,24 @@ class ClusterTab(QWidget):
             df["cluster_id"] = labels
             df.to_csv(out_csv, index=False)
             self.log_append(f"State {state}: wrote clustered.csv with {k_eff} clusters -> {out_csv}")
+            # Log quick stats: min/median/max cluster sizes and % singletons
+            try:
+                sizes = df["cluster_id"].value_counts().tolist()
+                if sizes:
+                    sizes_sorted = sorted(sizes)
+                    n = len(sizes_sorted)
+                    median = sizes_sorted[n // 2] if n % 2 == 1 else (
+                        (sizes_sorted[n // 2 - 1] + sizes_sorted[n // 2]) / 2
+                    )
+                    singletons = sum(1 for s in sizes_sorted if s == 1)
+                    pct_single = (100.0 * singletons / max(1, n))
+                    self.log_append(
+                        f"State {state}: cluster sizes min/median/max = "
+                        f"{sizes_sorted[0]}/{median}/{sizes_sorted[-1]} | "
+                        f"{singletons} singleton clusters ({pct_single:.1f}%)."
+                    )
+            except Exception:
+                pass
             # If the state is currently selected, refresh preview; otherwise leave table as-is
             current = self.state_list.currentItem().text() if self.state_list.currentItem() else ""
             if current == state:
@@ -207,10 +233,21 @@ class ClusterTab(QWidget):
         self.cluster_all_btn = QPushButton("Cluster All")
         self.cluster_all_btn.setEnabled(False)
         self.cluster_all_btn.clicked.connect(self.on_cluster_all)
+        # Map preview button
+        self.preview_map_btn = QPushButton("Preview Map")
+        self.preview_map_btn.setToolTip("Open a simple map of clustered points in your browser")
+        self.preview_map_btn.setEnabled(False)
+        self.preview_map_btn.clicked.connect(self.on_preview_map)
+        # Save per-state K preference button
+        self.save_k_btn = QPushButton("Save K for State")
+        self.save_k_btn.setToolTip("Save the current K value as a per-state override")
+        self.save_k_btn.clicked.connect(self._on_save_k_for_state)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._on_refresh_view)
         actions_row.addStretch(1)
         actions_row.addWidget(refresh_btn)
+        actions_row.addWidget(self.preview_map_btn)
+        actions_row.addWidget(self.save_k_btn)
         actions_row.addWidget(self.cluster_all_btn)
         actions_row.addWidget(self.cluster_btn)
         left_box.addLayout(actions_row)
@@ -267,8 +304,19 @@ class ClusterTab(QWidget):
         csv_path = self.workspace / state_code / "clustered.csv"
         if csv_path.exists():
             self._load_table_from_csv(csv_path)
+            if hasattr(self, "preview_map_btn"):
+                self.preview_map_btn.setEnabled(True)
         else:
             self.clear_table()
+            if hasattr(self, "preview_map_btn"):
+                self.preview_map_btn.setEnabled(False)
+        # Reflect saved per-state K into the UI spinbox if available
+        try:
+            k_pref = self._get_state_k(state_code)
+            if k_pref and hasattr(self, "k_clusters"):
+                self.k_clusters.setValue(int(k_pref))
+        except Exception:
+            pass
 
     def clear_table(self) -> None:
         if hasattr(self, "table"):
@@ -297,3 +345,123 @@ class ClusterTab(QWidget):
         for r, row in enumerate(data[:1000]):
             for c, val in enumerate(row):
                 self.table.setItem(r, c, QTableWidgetItem(val))
+
+    # --- Preferences helpers: per-state K overrides ---
+
+    def on_preview_map(self) -> None:
+        # Open a simple Folium map in browser for the selected state's clustered.csv
+        state = self.state_list.currentItem().text() if self.state_list.currentItem() else ""
+        if not self.workspace or not state:
+            QMessageBox.information(self, "Select a state", "Select a state to preview.")
+            return
+        csv_path = self.workspace / state / "clustered.csv"
+        if not csv_path.exists():
+            QMessageBox.information(
+                self, "No clustered.csv", "Run clustering first to preview the map."
+            )
+            return
+        try:
+            import pandas as pd  # type: ignore
+        except Exception:
+            self.log_append("pandas is required for map preview. Install with: uv add pandas")
+            return
+        try:
+            import folium  # type: ignore
+        except Exception:
+            self.log_append("folium is required for map preview. Install with: uv add folium")
+            return
+        try:
+            df = pd.read_csv(csv_path)
+            cols = {c.lower(): c for c in df.columns}
+            lat_col = cols.get("lat") or cols.get("latitude")
+            lon_col = cols.get("lon") or cols.get("longitude")
+            cid_col = cols.get("cluster_id")
+            if not lat_col or not lon_col or not cid_col:
+                self.log_append("clustered.csv must include lat/lon and cluster_id columns.")
+                return
+            if df.empty:
+                self.log_append("No rows to preview on the map.")
+                return
+            center = [df[lat_col].astype(float).mean(), df[lon_col].astype(float).mean()]
+            m = folium.Map(location=center, zoom_start=7)
+            palette = [
+                "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+            ]
+            for _, r in df.iterrows():
+                try:
+                    lat = float(r[lat_col])
+                    lon = float(r[lon_col])
+                    cid = int(r[cid_col])
+                except Exception:
+                    continue
+                color = palette[cid % len(palette)]
+                folium.CircleMarker(
+                    location=[lat, lon], radius=3, color=color, fill=True, fill_opacity=0.8
+                ).add_to(m)
+            out_html = self.workspace / state / "cluster_preview.html"
+            m.save(str(out_html))
+            try:
+                webbrowser.open(out_html.as_uri())
+            except Exception:
+                self.log_append(f"Saved map to {out_html}")
+        except Exception as e:
+            self.log_append(f"Failed to build map preview: {e}")
+    def _prefs_path(self) -> Optional[Path]:
+        try:
+            return (self.workspace / "cluster_prefs.json") if self.workspace else None
+        except Exception:
+            return None
+
+    def _load_prefs(self) -> Dict[str, Any]:
+        p = self._prefs_path()
+        if not p or not p.exists():
+            return {}
+        try:
+            import json
+
+            with p.open("r", encoding="utf-8") as f:
+                return json.load(f) or {}
+        except Exception:
+            return {}
+
+    def _save_prefs(self, data: Dict[str, Any]) -> None:
+        p = self._prefs_path()
+        if not p:
+            return
+        try:
+            import json
+
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def _get_state_k(self, state: str) -> Optional[int]:
+        prefs = self._load_prefs()
+        try:
+            val = (prefs.get("per_state_k") or {}).get(state)
+            return int(val) if val is not None else None
+        except Exception:
+            return None
+
+    def _set_state_k(self, state: str, k: int) -> None:
+        prefs = self._load_prefs()
+        per = prefs.get("per_state_k") or {}
+        per[str(state)] = int(k)
+        prefs["per_state_k"] = per
+        self._save_prefs(prefs)
+
+    def _on_save_k_for_state(self) -> None:
+        # Save current K value for the selected state
+        if not self.workspace:
+            QMessageBox.information(self, "No workspace", "Select a workspace first.")
+            return
+        state = self.state_list.currentItem().text() if self.state_list.currentItem() else ""
+        if not state:
+            QMessageBox.information(self, "Select a state", "Select a state to save K for.")
+            return
+        k = int(self.k_clusters.value()) if hasattr(self, "k_clusters") else 1
+        self._set_state_k(state, k)
+        self.log_append(f"Saved K={k} override for state {state}.")
