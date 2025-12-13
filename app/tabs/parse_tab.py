@@ -1,26 +1,25 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Optional, Dict, Any, List
 import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QLineEdit,
     QFileDialog,
-    QTextEdit,
-    QTabWidget,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
     QListWidget,
+    QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
-    QSizePolicy,
-    QHeaderView,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 
@@ -144,16 +143,56 @@ class ParseTab(QWidget):
 
         # US state name to code mapping (partial; include all states)
         state_name_to_code = {
-            "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
-            "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
-            "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
-            "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
-            "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS", "missouri": "MO",
-            "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ",
-            "new mexico": "NM", "new york": "NY", "north carolina": "NC", "north dakota": "ND", "ohio": "OH",
-            "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
-            "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT", "vermont": "VT",
-            "virginia": "VA", "washington": "WA", "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+            "alabama": "AL",
+            "alaska": "AK",
+            "arizona": "AZ",
+            "arkansas": "AR",
+            "california": "CA",
+            "colorado": "CO",
+            "connecticut": "CT",
+            "delaware": "DE",
+            "florida": "FL",
+            "georgia": "GA",
+            "hawaii": "HI",
+            "idaho": "ID",
+            "illinois": "IL",
+            "indiana": "IN",
+            "iowa": "IA",
+            "kansas": "KS",
+            "kentucky": "KY",
+            "louisiana": "LA",
+            "maine": "ME",
+            "maryland": "MD",
+            "massachusetts": "MA",
+            "michigan": "MI",
+            "minnesota": "MN",
+            "mississippi": "MS",
+            "missouri": "MO",
+            "montana": "MT",
+            "nebraska": "NE",
+            "nevada": "NV",
+            "new hampshire": "NH",
+            "new jersey": "NJ",
+            "new mexico": "NM",
+            "new york": "NY",
+            "north carolina": "NC",
+            "north dakota": "ND",
+            "ohio": "OH",
+            "oklahoma": "OK",
+            "oregon": "OR",
+            "pennsylvania": "PA",
+            "rhode island": "RI",
+            "south carolina": "SC",
+            "south dakota": "SD",
+            "tennessee": "TN",
+            "texas": "TX",
+            "utah": "UT",
+            "vermont": "VT",
+            "virginia": "VA",
+            "washington": "WA",
+            "west virginia": "WV",
+            "wisconsin": "WI",
+            "wyoming": "WY",
             "district of columbia": "DC",
         }
 
@@ -180,6 +219,7 @@ class ParseTab(QWidget):
         def clean_part(val: Any) -> str:
             try:
                 import pandas as pd  # type: ignore
+
                 if pd.isna(val):
                     return ""
             except Exception:
@@ -199,7 +239,11 @@ class ParseTab(QWidget):
                 if mapping == "JITB":
                     loc = clean_part(row[cols_norm["loc"]])
                     street1 = clean_part(row[cols_norm["street1"]])
-                    street2 = clean_part(row.get(cols_norm.get("street2", ""), "")) if cols_norm.get("street2") else ""
+                    street2 = (
+                        clean_part(row.get(cols_norm.get("street2", ""), ""))
+                        if cols_norm.get("street2")
+                        else ""
+                    )
                     city = clean_part(row[cols_norm["city"]])
                     state_raw = row[cols_norm["st"]]
                     zip_raw = row[cols_norm["zip"]]
@@ -340,12 +384,14 @@ class ParseTab(QWidget):
         # Load CSV and populate table
         try:
             import pandas as pd  # type: ignore
+
             df = pd.read_csv(csv_path)
             self.populate_table_from_dataframe(df)
         except Exception:
             # Fallback to csv module if pandas has an issue
             try:
                 import csv
+
                 with csv_path.open("r", encoding="utf-8", newline="") as f:
                     reader = csv.reader(f)
                     rows = list(reader)
@@ -392,15 +438,15 @@ class ParseTab(QWidget):
             pass
         # Set narrow fixed widths for 'state' and 'zip' columns when present
         name_to_index = {str(h).strip().lower(): i for i, h in enumerate(headers)}
-        if 'state' in name_to_index:
-            idx = name_to_index['state']
+        if "state" in name_to_index:
+            idx = name_to_index["state"]
             try:
                 header_view.setSectionResizeMode(idx, QHeaderView.ResizeMode.Interactive)
             except Exception:
                 pass
             self.state_table.setColumnWidth(idx, 50)  # 2-letter
-        if 'zip' in name_to_index:
-            idx = name_to_index['zip']
+        if "zip" in name_to_index:
+            idx = name_to_index["zip"]
             try:
                 header_view.setSectionResizeMode(idx, QHeaderView.ResizeMode.Interactive)
             except Exception:

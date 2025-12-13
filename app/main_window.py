@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
-    QMainWindow,
-    QTabWidget,
-    QWidget,
-    QVBoxLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMainWindow,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
-from .tabs.workspace_tab import WorkspaceTab
-from .tabs.parse_tab import ParseTab
-from .tabs.geocode_tab import GeocodeTab
 from .tabs.cluster_tab import ClusterTab
+from .tabs.geocode_tab import GeocodeTab
+from .tabs.parse_tab import ParseTab
 from .tabs.vrptw_tab import VRPTWTab
+from .tabs.workspace_tab import WorkspaceTab
 
 
 class MainWindow(QMainWindow):

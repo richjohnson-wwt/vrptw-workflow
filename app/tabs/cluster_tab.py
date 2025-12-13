@@ -1,27 +1,25 @@
 from __future__ import annotations
 
-from typing import Optional, List
-from pathlib import Path
-
 import csv
+from pathlib import Path
+from typing import List, Optional
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QPushButton,
-    QSpinBox,
-    QTextEdit,
-    QFormLayout,
-    QTabWidget,
     QListWidget,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
-    QSizePolicy,
-    QMessageBox,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 
@@ -72,8 +70,7 @@ class ClusterTab(QWidget):
         self.subtabs.addTab(self.view, "Clustering")
 
         layout.addWidget(self.subtabs, 1)
-
-        layout.addStretch(1)
+        # Removed extra stretch to allow subtabs to occupy full vertical space
 
     # Workspace API for MainWindow
     def set_workspace(self, path_str: str) -> None:
@@ -118,7 +115,9 @@ class ClusterTab(QWidget):
             from sklearn.cluster import KMeans
         except Exception as e:
             self.log_append(f"scikit-learn not available: {e}")
-            QMessageBox.critical(self, "Dependency missing", "scikit-learn is required for KMeans clustering.")
+            QMessageBox.critical(
+                self, "Dependency missing", "scikit-learn is required for KMeans clustering."
+            )
             return
 
         try:
@@ -133,7 +132,9 @@ class ClusterTab(QWidget):
         lat_col = cols.get("lat") or cols.get("latitude")
         lon_col = cols.get("lon") or cols.get("longitude")
         if not lat_col or not lon_col:
-            self.log_append("Could not find latitude/longitude columns (lat/lon or latitude/longitude).")
+            self.log_append(
+                "Could not find latitude/longitude columns (lat/lon or latitude/longitude)."
+            )
             QMessageBox.warning(
                 self,
                 "Missing columns",
@@ -147,7 +148,7 @@ class ClusterTab(QWidget):
                 self.log_append(f"State {state}: no rows to cluster.")
                 return
             k = max(1, min(k, len(X)))
-            model = KMeans(n_clusters=k, n_init=10, random_state=42)
+            model = KMeans(n_clusters=k, n_init="auto", random_state=42)
             labels = model.fit_predict(X)
             df["cluster_id"] = labels
             df.to_csv(out_csv, index=False)
@@ -221,7 +222,7 @@ class ClusterTab(QWidget):
         try:
             for p in sorted([d for d in self.workspace.iterdir() if d.is_dir()]):
                 # Skip hidden folders like .cache
-                if p.name.startswith('.'):
+                if p.name.startswith("."):
                     continue
                 self.state_list.addItem(p.name)
         except Exception as e:

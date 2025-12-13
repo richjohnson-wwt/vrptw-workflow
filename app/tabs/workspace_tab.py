@@ -3,21 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import pyqtSignal, QSettings
+from PyQt6.QtCore import QSettings, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
     QComboBox,
-    QLineEdit,
-    QFileDialog,
     QFormLayout,
-    QFrame,
+    QHBoxLayout,
     QInputDialog,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
-
 
 DEFAULT_BASE = Path.home() / "Documents" / "VRPTW"
 
@@ -205,7 +202,9 @@ class WorkspaceTab(QWidget):
     def current_workspace_path(self) -> Optional[Path]:
         client = self.client_combo.currentText()
         workspace = self.workspace_combo.currentText()
-        if (not client or client == "<no clients>") or (not workspace or workspace == "<no workspaces>"):
+        if (not client or client == "<no clients>") or (
+            not workspace or workspace == "<no workspaces>"
+        ):
             return None
         return self.base_path / client / workspace
 

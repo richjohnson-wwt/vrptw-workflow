@@ -1,28 +1,27 @@
 from __future__ import annotations
 
-from typing import Optional, List
-from pathlib import Path
 import csv
+from pathlib import Path
+from typing import List, Optional
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QPushButton,
-    QTextEdit,
-    QTabWidget,
     QListWidget,
-    QFormLayout,
-    QDoubleSpinBox,
-    QComboBox,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
-    QSizePolicy,
-    QMessageBox,
-    QCheckBox,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 
@@ -39,7 +38,9 @@ class VRPTWTab(QWidget):
         super().__init__(parent)
         self.setObjectName("VRPTWTab")
         self.workspace: Optional[Path] = None
-        self.last_solution: Optional[dict] = None  # {'state': str, 'mode': 'clusters'|'statewide', 'routes': List[Tuple[str, List[str]]]} 
+        self.last_solution: Optional[dict] = (
+            None  # {'state': str, 'mode': 'clusters'|'statewide', 'routes': List[Tuple[str, List[str]]]}
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -73,7 +74,7 @@ class VRPTWTab(QWidget):
         self.subtabs.addTab(self.solve, "Solve")
 
         layout.addWidget(self.subtabs, 1)
-        layout.addStretch(1)
+        # Removed extra stretch to allow subtabs to occupy full vertical space
 
     # Workspace API for MainWindow
     def set_workspace(self, path_str: str) -> None:
@@ -126,7 +127,10 @@ class VRPTWTab(QWidget):
         params.addRow("Average speed:", self.avg_speed)
 
         self.ignore_clusters = QCheckBox("Ignore clusters (solve whole state)")
-        self.ignore_clusters.setToolTip("Solve a single VRPTW model with all sites in the state, allowing one vehicle to visit multiple former clusters.")
+        self.ignore_clusters.setToolTip(
+            "Solve a single VRPTW model with all sites in the state, allowing one vehicle to visit multiple former clusters."
+        )
+        self.ignore_clusters.setChecked(True)
         params.addRow(self.ignore_clusters)
 
         left.addLayout(params)
@@ -140,7 +144,9 @@ class VRPTWTab(QWidget):
         self.run_btn.clicked.connect(self.on_run)
         self.map_btn = QPushButton("View on Map")
         self.map_btn.setEnabled(False)
-        self.map_btn.setToolTip("Create a Folium HTML map for the current solution and save it next to clustered.csv")
+        self.map_btn.setToolTip(
+            "Create a Folium HTML map for the current solution and save it next to clustered.csv"
+        )
         self.map_btn.clicked.connect(self.on_view_map)
         actions.addStretch(1)
         actions.addWidget(refresh_btn)
@@ -165,17 +171,25 @@ class VRPTWTab(QWidget):
     def on_view_map(self) -> None:
         # Create a Folium map for the selected state using the most recent solution
         if not self.last_solution:
-            QMessageBox.information(self, "No solution", "Run VRPTW first to generate a solution to display on the map.")
+            QMessageBox.information(
+                self, "No solution", "Run VRPTW first to generate a solution to display on the map."
+            )
             return
-        state = self.last_solution.get('state')
+        state = self.last_solution.get("state")
         if not self.workspace or not state:
-            QMessageBox.warning(self, "Missing workspace", "Please select a valid workspace and state.")
+            QMessageBox.warning(
+                self, "Missing workspace", "Please select a valid workspace and state."
+            )
             return
         try:
             import folium
         except Exception as e:
             self.log_append(f"Folium not available: {e}")
-            QMessageBox.critical(self, "Dependency missing", "folium is required to build the map.\nInstall with: uv add folium")
+            QMessageBox.critical(
+                self,
+                "Dependency missing",
+                "folium is required to build the map.\nInstall with: uv add folium",
+            )
             return
 
         csv_path = self.workspace / state / "clustered.csv"
@@ -185,6 +199,7 @@ class VRPTWTab(QWidget):
 
         # Load locations by id
         import csv as _csv
+
         points = {}
         meta = {}
         with csv_path.open("r", newline="", encoding="utf-8") as f:
@@ -204,53 +219,87 @@ class VRPTWTab(QWidget):
                     continue
                 sid = row[id_idx]
                 try:
-                    lat = float(row[lat_idx]); lon = float(row[lon_idx])
+                    lat = float(row[lat_idx])
+                    lon = float(row[lon_idx])
                 except Exception:
                     continue
                 points[sid] = (lat, lon)
                 meta[sid] = {
-                    'address': row[addr_idx] if addr_idx is not None and addr_idx < len(row) else '',
-                    'display_name': row[name_idx] if name_idx is not None and name_idx < len(row) else '',
+                    "address": (
+                        row[addr_idx] if addr_idx is not None and addr_idx < len(row) else ""
+                    ),
+                    "display_name": (
+                        row[name_idx] if name_idx is not None and name_idx < len(row) else ""
+                    ),
                 }
 
         # Gather all points used by routes
         all_coords = []
-        for _, seq_ids in self.last_solution['routes']:
+        for _, seq_ids in self.last_solution["routes"]:
             for sid in seq_ids:
                 if sid in points:
                     all_coords.append(points[sid])
         if not all_coords:
-            QMessageBox.information(self, "No coordinates", "The current solution has no mappable coordinates.")
+            QMessageBox.information(
+                self, "No coordinates", "The current solution has no mappable coordinates."
+            )
             return
         avg_lat = sum(lat for lat, _ in all_coords) / len(all_coords)
         avg_lon = sum(lon for _, lon in all_coords) / len(all_coords)
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles='OpenStreetMap')
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles="OpenStreetMap")
 
         # Color palette for up to many routes
         colors = [
-            'red','blue','green','purple','orange','darkred','lightred','beige','darkblue','darkgreen','cadetblue','darkpurple','white','pink','lightblue','lightgreen','gray','black','lightgray'
+            "red",
+            "blue",
+            "green",
+            "purple",
+            "orange",
+            "darkred",
+            "lightred",
+            "beige",
+            "darkblue",
+            "darkgreen",
+            "cadetblue",
+            "darkpurple",
+            "white",
+            "pink",
+            "lightblue",
+            "lightgreen",
+            "gray",
+            "black",
+            "lightgray",
         ]
 
         # Plot each route
-        for idx, (cluster_label, seq_ids) in enumerate(self.last_solution['routes']):
+        for idx, (cluster_label, seq_ids) in enumerate(self.last_solution["routes"]):
             color = colors[idx % len(colors)]
             coords = [points[sid] for sid in seq_ids if sid in points]
             if len(coords) >= 2:
-                folium.PolyLine(coords, color=color, weight=4, opacity=0.8, tooltip=f"Route {idx} (Cluster {cluster_label})").add_to(m)
+                folium.PolyLine(
+                    coords,
+                    color=color,
+                    weight=4,
+                    opacity=0.8,
+                    tooltip=f"Route {idx} (Cluster {cluster_label})",
+                ).add_to(m)
             # Add markers with order numbers
             for order, sid in enumerate(seq_ids, start=1):
                 if sid not in points:
                     continue
                 lat, lon = points[sid]
-                popup = folium.Popup(html=f"<b>{sid}</b><br>{meta.get(sid,{}).get('address','')}<br>{meta.get(sid,{}).get('display_name','')}", max_width=300)
+                popup = folium.Popup(
+                    html=f"<b>{sid}</b><br>{meta.get(sid,{}).get('address','')}<br>{meta.get(sid,{}).get('display_name','')}",
+                    max_width=300,
+                )
                 folium.Marker(
                     location=[lat, lon],
                     popup=popup,
                     tooltip=f"{order}. {sid}",
-                    icon=folium.Icon(color=color, icon='info-sign')
+                    icon=folium.Icon(color=color, icon="info-sign"),
                 ).add_to(m)
 
-        out_path = (self.workspace / state / "routes_map.html")
+        out_path = self.workspace / state / "routes_map.html"
         try:
             m.save(str(out_path))
             self.log_append(f"Map saved to {out_path}")
@@ -258,6 +307,7 @@ class VRPTWTab(QWidget):
             # Open in default browser
             try:
                 import webbrowser
+
                 webbrowser.open(out_path.as_uri())
             except Exception:
                 pass
@@ -298,15 +348,23 @@ class VRPTWTab(QWidget):
         state = self.state_list.currentItem().text() if self.state_list.currentItem() else ""
         data = self.cluster_combo.currentData()
         # data is None for All clusters, or int for a specific cluster
-        if not state or (not self.ignore_clusters.isChecked() and data is None and self.cluster_combo.currentIndex() < 0):
+        if not state or (
+            not self.ignore_clusters.isChecked()
+            and data is None
+            and self.cluster_combo.currentIndex() < 0
+        ):
             QMessageBox.information(self, "Select inputs", "Please select a state and cluster.")
             return
         # Try to import OR-Tools lazily
         try:
-            from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+            pass
         except Exception as e:
             self.log_append(f"OR-Tools not available: {e}")
-            QMessageBox.critical(self, "Dependency missing", "ortools is required to run the VRPTW solver.\nInstall with: uv add ortools")
+            QMessageBox.critical(
+                self,
+                "Dependency missing",
+                "ortools is required to run the VRPTW solver.\nInstall with: uv add ortools",
+            )
             return
 
         speed_mph = float(self.avg_speed.value())
@@ -318,7 +376,9 @@ class VRPTWTab(QWidget):
 
         # Run state-wide (ignore clusters) or per cluster(s)
         self._clear_results()
-        all_rows: list[tuple[str, str, int, list[str]]] = []  # (state, cluster_label, vehicle_idx, visit_ids)
+        all_rows: list[tuple[str, str, int, list[str]]] = (
+            []
+        )  # (state, cluster_label, vehicle_idx, visit_ids)
         cluster_ids: list[int]
         if self.ignore_clusters.isChecked():
             cluster_ids = []  # we won't iterate clusters
@@ -329,10 +389,11 @@ class VRPTWTab(QWidget):
             else:
                 cluster_ids = [int(data)]
 
-        if not cluster_ids:
+        # If we're not ignoring clusters and none were found, show message and return.
+        if not self.ignore_clusters.isChecked() and not cluster_ids:
             self.log_append(f"No clusters found to solve for state={state}.")
             # Prepare empty table with headers so user sees structure
-            headers = ["State", "Cluster", "Vehicle (day)", "Stops", "Sequence (row indices)"]
+            headers = ["State", "Cluster", "Vehicle (day)", "Stops", "Sequence (site ids)"]
             self.results.setColumnCount(len(headers))
             self.results.setHorizontalHeaderLabels(headers)
             self.results.setRowCount(1)
@@ -355,7 +416,9 @@ class VRPTWTab(QWidget):
         else:
             for cid in cluster_ids:
                 try:
-                    routes_ids = self._solve_single_cluster(clustered_path, cid, speed_mph, default_service_h)
+                    routes_ids = self._solve_single_cluster(
+                        clustered_path, cid, speed_mph, default_service_h
+                    )
                 except Exception as e:
                     self.log_append(f"Solver failed for state={state} cluster={cid}: {e}")
                     continue
@@ -375,27 +438,45 @@ class VRPTWTab(QWidget):
                 self.results.setItem(r, 3, QTableWidgetItem(str(len(seq_ids))))
                 self.results.setItem(r, 4, QTableWidgetItem(", ".join(seq_ids)))
             self.results.resizeColumnsToContents()
+            # Metrics
+            vehicle_days = len(all_rows)
+            total_stops = sum(len(seq_ids) for (_, _, _, seq_ids) in all_rows)
+            avg_stops = (total_stops / vehicle_days) if vehicle_days > 0 else 0.0
             if self.ignore_clusters.isChecked():
-                self.log_append(f"Computed {len(all_rows)} vehicle-days for state-wide solve.")
+                self.log_append(
+                    f"Computed {vehicle_days} vehicle-days for state-wide solve. Avg stops/day: {avg_stops:.2f}"
+                )
             else:
-                self.log_append(f"Computed {len(all_rows)} vehicle-days across {len(cluster_ids)} cluster(s).")
+                self.log_append(
+                    f"Computed {vehicle_days} vehicle-days across {len(cluster_ids)} cluster(s). Avg stops/day: {avg_stops:.2f}"
+                )
             # Store last solution for mapping
             self.last_solution = {
-                'state': state,
-                'mode': 'statewide' if self.ignore_clusters.isChecked() else 'clusters',
-                'routes': [(cid_label, seq_ids) for (_, cid_label, _, seq_ids) in all_rows],
+                "state": state,
+                "mode": "statewide" if self.ignore_clusters.isChecked() else "clusters",
+                "routes": [(cid_label, seq_ids) for (_, cid_label, _, seq_ids) in all_rows],
             }
             self.map_btn.setEnabled(True)
         else:
             # Show an informative single row
             self.results.setRowCount(1)
             self.results.setItem(0, 0, QTableWidgetItem(state))
-            self.results.setItem(0, 1, QTableWidgetItem("ALL" if self.ignore_clusters.isChecked() else ", ".join(map(str, cluster_ids))))
+            self.results.setItem(
+                0,
+                1,
+                QTableWidgetItem(
+                    "ALL" if self.ignore_clusters.isChecked() else ", ".join(map(str, cluster_ids))
+                ),
+            )
             self.results.setItem(0, 2, QTableWidgetItem("-"))
             self.results.setItem(0, 3, QTableWidgetItem("0"))
-            self.results.setItem(0, 4, QTableWidgetItem("No feasible routes found within 9–17 window"))
+            self.results.setItem(
+                0, 4, QTableWidgetItem("No feasible routes found within 9–17 window")
+            )
             self.results.resizeColumnsToContents()
-            self.log_append("No feasible routes found; consider increasing vehicles (more clusters), reducing service time, or increasing time window.")
+            self.log_append(
+                "No feasible routes found; consider increasing vehicles (more clusters), reducing service time, or increasing time window."
+            )
             self.last_solution = None
             self.map_btn.setEnabled(False)
 
@@ -406,7 +487,7 @@ class VRPTWTab(QWidget):
             return
         try:
             for p in sorted([d for d in self.workspace.iterdir() if d.is_dir()]):
-                if p.name.startswith('.'):
+                if p.name.startswith("."):
                     continue
                 self.state_list.addItem(p.name)
         except Exception as e:
@@ -418,11 +499,14 @@ class VRPTWTab(QWidget):
         self.results.setRowCount(0)
 
     # --- Solver helpers ---
-    def _solve_single_cluster(self, csv_path: Path, cluster_id: int, speed_mph: float, default_service_h: float) -> List[List[str]]:
+    def _solve_single_cluster(
+        self, csv_path: Path, cluster_id: int, speed_mph: float, default_service_h: float
+    ) -> List[List[str]]:
         """
         Returns a list of routes. Each route is a list of site ids (strings) for the filtered rows in this cluster.
         """
         import math
+
         # Load and filter rows for the cluster; capture lat/lon and optional service_time_hours
         rows: list[list[str]]
         with csv_path.open("r", newline="", encoding="utf-8") as f:
@@ -446,7 +530,13 @@ class VRPTWTab(QWidget):
                 raise ValueError("lat/lon (or latitude/longitude) columns not found")
             svc_idx = colmap.get("service_time_hours")
             id_idx = colmap.get("id")
-            rows = [row for row in reader if cid_idx < len(row) and row[cid_idx] != "" and int(float(row[cid_idx])) == int(cluster_id)]
+            rows = [
+                row
+                for row in reader
+                if cid_idx < len(row)
+                and row[cid_idx] != ""
+                and int(float(row[cid_idx])) == int(cluster_id)
+            ]
 
         n = len(rows)
         if n == 0:
@@ -454,8 +544,23 @@ class VRPTWTab(QWidget):
         # Build vectors
         lats = [float(rows[i][lat_idx]) for i in range(n)]
         lons = [float(rows[i][lon_idx]) for i in range(n)]
-        ids = [rows[i][id_idx] if id_idx is not None and rows[i][id_idx] != "" else str(i) for i in range(n)]
-        svc_min = [int(round((float(rows[i][svc_idx]) if svc_idx is not None and rows[i][svc_idx] != "" else default_service_h) * 60)) for i in range(n)]
+        ids = [
+            rows[i][id_idx] if id_idx is not None and rows[i][id_idx] != "" else str(i)
+            for i in range(n)
+        ]
+        svc_min = [
+            int(
+                round(
+                    (
+                        float(rows[i][svc_idx])
+                        if svc_idx is not None and rows[i][svc_idx] != ""
+                        else default_service_h
+                    )
+                    * 60
+                )
+            )
+            for i in range(n)
+        ]
 
         # Haversine distance in miles
         def hav_miles(i: int, j: int) -> float:
@@ -463,7 +568,10 @@ class VRPTWTab(QWidget):
             p = math.pi / 180.0
             dlat = (lats[j] - lats[i]) * p
             dlon = (lons[j] - lons[i]) * p
-            a = math.sin(dlat/2)**2 + math.cos(lats[i]*p) * math.cos(lats[j]*p) * math.sin(dlon/2)**2
+            a = (
+                math.sin(dlat / 2) ** 2
+                + math.cos(lats[i] * p) * math.cos(lats[j] * p) * math.sin(dlon / 2) ** 2
+            )
             c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
             return R * c
 
@@ -492,10 +600,13 @@ class VRPTWTab(QWidget):
 
         # Log quick diagnostics
         total_service = sum(svc_min)
-        self.log_append(f"Cluster {cluster_id}: n={n}, total service={total_service} min (~{total_service/60:.1f} h)")
+        self.log_append(
+            f"Cluster {cluster_id}: n={n}, total service={total_service} min (~{total_service/60:.1f} h)"
+        )
 
         # OR-Tools setup
         from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
         manager = pywrapcp.RoutingIndexManager(size, n, 0)  # up to n vehicles (one per site)
         routing = pywrapcp.RoutingModel(manager)
 
@@ -532,7 +643,9 @@ class VRPTWTab(QWidget):
         # Search parameters
         search = pywrapcp.DefaultRoutingSearchParameters()
         search.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-        search.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        search.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        )
         search.time_limit.FromSeconds(5)
 
         solution = routing.SolveWithParameters(search)
@@ -554,12 +667,15 @@ class VRPTWTab(QWidget):
 
         return routes
 
-    def _solve_state_wide(self, csv_path: Path, speed_mph: float, default_service_h: float) -> List[List[str]]:
+    def _solve_state_wide(
+        self, csv_path: Path, speed_mph: float, default_service_h: float
+    ) -> List[List[str]]:
         """
         Solve VRPTW for all rows in the state's clustered.csv, ignoring cluster boundaries.
         Returns list of routes as lists of site ids.
         """
         import math
+
         rows: list[list[str]]
         with csv_path.open("r", newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
@@ -580,15 +696,33 @@ class VRPTWTab(QWidget):
             return []
         lats = [float(rows[i][lat_idx]) for i in range(n)]
         lons = [float(rows[i][lon_idx]) for i in range(n)]
-        ids = [rows[i][id_idx] if id_idx is not None and rows[i][id_idx] != "" else str(i) for i in range(n)]
-        svc_min = [int(round((float(rows[i][svc_idx]) if svc_idx is not None and rows[i][svc_idx] != "" else default_service_h) * 60)) for i in range(n)]
+        ids = [
+            rows[i][id_idx] if id_idx is not None and rows[i][id_idx] != "" else str(i)
+            for i in range(n)
+        ]
+        svc_min = [
+            int(
+                round(
+                    (
+                        float(rows[i][svc_idx])
+                        if svc_idx is not None and rows[i][svc_idx] != ""
+                        else default_service_h
+                    )
+                    * 60
+                )
+            )
+            for i in range(n)
+        ]
 
         def hav_miles(i: int, j: int) -> float:
             R = 3958.7613
             p = math.pi / 180.0
             dlat = (lats[j] - lats[i]) * p
             dlon = (lons[j] - lons[i]) * p
-            a = math.sin(dlat/2)**2 + math.cos(lats[i]*p) * math.cos(lats[j]*p) * math.sin(dlon/2)**2
+            a = (
+                math.sin(dlat / 2) ** 2
+                + math.cos(lats[i] * p) * math.cos(lats[j] * p) * math.sin(dlon / 2) ** 2
+            )
             c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
             return R * c
 
@@ -608,6 +742,7 @@ class VRPTWTab(QWidget):
             time_matrix[i + 1][0] = svc_min[i]
 
         from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
         manager = pywrapcp.RoutingIndexManager(size, n, 0)
         routing = pywrapcp.RoutingModel(manager)
 
@@ -630,7 +765,9 @@ class VRPTWTab(QWidget):
 
         search = pywrapcp.DefaultRoutingSearchParameters()
         search.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-        search.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        search.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        )
         search.time_limit.FromSeconds(5)
 
         solution = routing.SolveWithParameters(search)

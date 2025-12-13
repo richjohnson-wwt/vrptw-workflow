@@ -1,32 +1,32 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Optional, List, Dict, Any
-import time
-import sqlite3
 import csv
+import sqlite3
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QSettings, QCoreApplication, QObject, QThread, pyqtSignal, QMetaObject
+import requests
+from PyQt6.QtCore import QCoreApplication, QMetaObject, QObject, QSettings, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QLineEdit,
-    QTextEdit,
     QFormLayout,
-    QTabWidget,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
     QListWidget,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
-    QSizePolicy,
-    QHeaderView,
-    QProgressBar,
-    QMessageBox,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-import requests
 
 
 class GeocodeWorker(QObject):
@@ -70,7 +70,9 @@ class GeocodeWorker(QObject):
             )
             """
         )
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_addresses_norm ON addresses(normalized_address)")
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_addresses_norm ON addresses(normalized_address)"
+        )
         conn.commit()
         return conn
 
@@ -94,14 +96,30 @@ class GeocodeWorker(QObject):
     @staticmethod
     def _cache_get(conn: sqlite3.Connection, norm: str) -> Optional[Dict[str, Any]]:
         cur = conn.cursor()
-        cur.execute("SELECT latitude, longitude, display_name, source, updated_at FROM addresses WHERE normalized_address = ?", (norm,))
+        cur.execute(
+            "SELECT latitude, longitude, display_name, source, updated_at FROM addresses WHERE normalized_address = ?",
+            (norm,),
+        )
         row = cur.fetchone()
         if row:
-            return {"lat": row[0], "lon": row[1], "display_name": row[2], "source": row[3], "updated_at": row[4]}
+            return {
+                "lat": row[0],
+                "lon": row[1],
+                "display_name": row[2],
+                "source": row[3],
+                "updated_at": row[4],
+            }
         return None
 
     @staticmethod
-    def _cache_put(conn: sqlite3.Connection, norm: str, lat: Optional[float], lon: Optional[float], display_name: str, source: str = "nominatim") -> None:
+    def _cache_put(
+        conn: sqlite3.Connection,
+        norm: str,
+        lat: Optional[float],
+        lon: Optional[float],
+        display_name: str,
+        source: str = "nominatim",
+    ) -> None:
         cur = conn.cursor()
         cur.execute(
             "INSERT OR REPLACE INTO addresses (normalized_address, latitude, longitude, display_name, source, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
@@ -131,7 +149,11 @@ class GeocodeWorker(QObject):
             if not data:
                 return None
             top = data[0]
-            return {"lat": float(top.get("lat")), "lon": float(top.get("lon")), "display_name": str(top.get("display_name", ""))}
+            return {
+                "lat": float(top.get("lat")),
+                "lon": float(top.get("lon")),
+                "display_name": str(top.get("display_name", "")),
+            }
         except Exception:
             return None
 
@@ -194,45 +216,64 @@ class GeocodeWorker(QObject):
                 cached = self._cache_get(conn, norm)
                 if cached:
                     total_cache_hits += 1
-                    lat = cached["lat"]; lon = cached["lon"]; disp = cached["display_name"]
+                    lat = cached["lat"]
+                    lon = cached["lon"]
+                    disp = cached["display_name"]
                     source = "cache" if (lat is not None and lon is not None) else "cache-none"
                 else:
                     time.sleep(1.05)  # rate limit
                     # multi-strategy
                     strategies = [(norm, "full")]
-                    no_zip = ", ".join([address, city, st, "USA"]) if zip5 else ", ".join([address, city, st, "USA"]) 
+                    no_zip = (
+                        ", ".join([address, city, st, "USA"])
+                        if zip5
+                        else ", ".join([address, city, st, "USA"])
+                    )
                     strategies.append((no_zip, "no-zip"))
                     terr = self._territory_full_name(st)
                     if terr:
                         strategies.append((", ".join([address, city, terr]), "territory"))
                     strategies.append((f"{city}, {st}", "city-state"))
-                    got = None; which = ""
+                    got = None
+                    which = ""
                     for q, label in strategies:
                         res = self._nominatim_geocode(q)
                         if res:
-                            got = res; which = label
+                            got = res
+                            which = label
                             break
                         time.sleep(1.05)
                     if not got:
-                        lat = None; lon = None; disp = ""; source = "miss"
+                        lat = None
+                        lon = None
+                        disp = ""
+                        source = "miss"
                         self._cache_put(conn, norm, lat, lon, disp, source="none")
                     else:
-                        lat = got["lat"]; lon = got["lon"]; disp = got["display_name"]
+                        lat = got["lat"]
+                        lon = got["lon"]
+                        disp = got["display_name"]
                         self._cache_put(conn, norm, lat, lon, disp, source="nominatim")
                         total_geocoded += 1
                         source = f"nominatim:{which}"
-                out_rows.append({
-                    "id": site_id,
-                    "address": norm,
-                    "lat": lat if lat is not None else "",
-                    "lon": lon if lon is not None else "",
-                    "display_name": disp,
-                })
+                out_rows.append(
+                    {
+                        "id": site_id,
+                        "address": norm,
+                        "lat": lat if lat is not None else "",
+                        "lon": lon if lon is not None else "",
+                        "display_name": disp,
+                    }
+                )
                 # per-row log & progress
                 if lat is not None and lon is not None:
-                    self.log.emit(f"State {state}: [{i}/{len(rows)}] {site_id} -> {lat:.6f},{lon:.6f} ({source})")
+                    self.log.emit(
+                        f"State {state}: [{i}/{len(rows)}] {site_id} -> {lat:.6f},{lon:.6f} ({source})"
+                    )
                 else:
-                    self.log.emit(f"State {state}: [{i}/{len(rows)}] {site_id} -> no result ({source})")
+                    self.log.emit(
+                        f"State {state}: [{i}/{len(rows)}] {site_id} -> no result ({source})"
+                    )
                 processed += 1
                 self.progress.emit(processed, grand_total)
 
@@ -242,7 +283,9 @@ class GeocodeWorker(QObject):
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_csv = out_dir / "geocoded.csv"
                 with out_csv.open("w", encoding="utf-8", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=["id", "address", "lat", "lon", "display_name"])
+                    writer = csv.DictWriter(
+                        f, fieldnames=["id", "address", "lat", "lon", "display_name"]
+                    )
                     writer.writeheader()
                     writer.writerows(out_rows)
                 self.log.emit(f"State {state}: wrote {len(out_rows)} rows to {out_csv}")
@@ -288,7 +331,9 @@ class GeocodeTab(QWidget):
         # Load persisted email
         self._load_email()
         # Save when editing finishes
-        self.email_input.editingFinished.connect(lambda: self._save_email(self.email_input.text().strip()))
+        self.email_input.editingFinished.connect(
+            lambda: self._save_email(self.email_input.text().strip())
+        )
 
         layout.addLayout(form)
 
@@ -338,8 +383,6 @@ class GeocodeTab(QWidget):
         self.subtabs.addTab(self.view, "Geocode View")
 
         layout.addWidget(self.subtabs, 1)
-
-        layout.addStretch(1)
 
     # Workspace API for MainWindow
     def set_workspace(self, path_str: str) -> None:
@@ -417,15 +460,27 @@ class GeocodeTab(QWidget):
         email = self.email_input.text().strip()
         if not email:
             self.log_append("Please enter your email (required by Nominatim usage policy).")
-            QMessageBox.warning(self, "Email required", "Please enter your email (required by Nominatim usage policy).")
+            QMessageBox.warning(
+                self,
+                "Email required",
+                "Please enter your email (required by Nominatim usage policy).",
+            )
             return
         if "@" not in email:
             self.log_append("The email entered doesn't look valid. Please provide a valid email.")
-            QMessageBox.warning(self, "Invalid email", "The email entered doesn't look valid. Please provide a valid email.")
+            QMessageBox.warning(
+                self,
+                "Invalid email",
+                "The email entered doesn't look valid. Please provide a valid email.",
+            )
             return
         self._save_email(email)
         # Determine selected state
-        state = self.state_list.currentItem().text() if hasattr(self, "state_list") and self.state_list.currentItem() else ""
+        state = (
+            self.state_list.currentItem().text()
+            if hasattr(self, "state_list") and self.state_list.currentItem()
+            else ""
+        )
         if not state:
             self.log_append("Select a state to geocode or use 'Geocode All'.")
             return
@@ -438,11 +493,19 @@ class GeocodeTab(QWidget):
         email = self.email_input.text().strip()
         if not email:
             self.log_append("Please enter your email (required by Nominatim usage policy).")
-            QMessageBox.warning(self, "Email required", "Please enter your email (required by Nominatim usage policy).")
+            QMessageBox.warning(
+                self,
+                "Email required",
+                "Please enter your email (required by Nominatim usage policy).",
+            )
             return
         if "@" not in email:
             self.log_append("The email entered doesn't look valid. Please provide a valid email.")
-            QMessageBox.warning(self, "Invalid email", "The email entered doesn't look valid. Please provide a valid email.")
+            QMessageBox.warning(
+                self,
+                "Invalid email",
+                "The email entered doesn't look valid. Please provide a valid email.",
+            )
             return
         self._save_email(email)
         # Confirm running Geocode All
@@ -554,13 +617,17 @@ class GeocodeTab(QWidget):
         # Final progress to full
         if hasattr(self, "progress") and self.progress.maximum() > 0:
             self.progress.setValue(self.progress.maximum())
-        self.log_append(f"Geocoding complete. Lookups: {total_lookups}, cache hits: {cache_hits}, new: {new_geocoded}")
+        self.log_append(
+            f"Geocoding complete. Lookups: {total_lookups}, cache hits: {cache_hits}, new: {new_geocoded}"
+        )
 
     def _on_cancel_clicked(self) -> None:
         # Request cancel on the worker (queued to worker thread)
         try:
             if hasattr(self, "worker") and self.worker is not None:
-                QMetaObject.invokeMethod(self.worker, "request_cancel", Qt.ConnectionType.QueuedConnection)
+                QMetaObject.invokeMethod(
+                    self.worker, "request_cancel", Qt.ConnectionType.QueuedConnection
+                )
                 self.log_append("Cancel requested…")
                 if hasattr(self, "cancel_btn"):
                     self.cancel_btn.setEnabled(False)
@@ -620,11 +687,13 @@ class GeocodeTab(QWidget):
         # Load CSV and populate table
         try:
             import pandas as pd  # type: ignore
+
             df = pd.read_csv(csv_path)
             self.populate_table_from_dataframe(df)
         except Exception:
             try:
                 import csv
+
                 with csv_path.open("r", encoding="utf-8", newline="") as f:
                     reader = csv.reader(f)
                     rows = list(reader)
@@ -721,15 +790,15 @@ class GeocodeTab(QWidget):
         except Exception:
             pass
         name_to_index = {str(h).strip().lower(): i for i, h in enumerate(headers)}
-        if 'state' in name_to_index:
-            idx = name_to_index['state']
+        if "state" in name_to_index:
+            idx = name_to_index["state"]
             try:
                 header_view.setSectionResizeMode(idx, QHeaderView.ResizeMode.Interactive)
             except Exception:
                 pass
             self.table.setColumnWidth(idx, 50)
-        if 'zip' in name_to_index:
-            idx = name_to_index['zip']
+        if "zip" in name_to_index:
+            idx = name_to_index["zip"]
             try:
                 header_view.setSectionResizeMode(idx, QHeaderView.ResizeMode.Interactive)
             except Exception:
@@ -774,7 +843,9 @@ class GeocodeTab(QWidget):
             )
             """
         )
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_addresses_norm ON addresses(normalized_address)")
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_addresses_norm ON addresses(normalized_address)"
+        )
         conn.commit()
         return conn
 
@@ -784,13 +855,30 @@ class GeocodeTab(QWidget):
 
     def _cache_get(self, conn: sqlite3.Connection, norm: str) -> Optional[Dict[str, Any]]:
         cur = conn.cursor()
-        cur.execute("SELECT latitude, longitude, display_name, source, updated_at FROM addresses WHERE normalized_address = ?", (norm,))
+        cur.execute(
+            "SELECT latitude, longitude, display_name, source, updated_at FROM addresses WHERE normalized_address = ?",
+            (norm,),
+        )
         row = cur.fetchone()
         if row:
-            return {"lat": row[0], "lon": row[1], "display_name": row[2], "source": row[3], "updated_at": row[4]}
+            return {
+                "lat": row[0],
+                "lon": row[1],
+                "display_name": row[2],
+                "source": row[3],
+                "updated_at": row[4],
+            }
         return None
 
-    def _cache_put(self, conn: sqlite3.Connection, norm: str, lat: Optional[float], lon: Optional[float], display_name: str, source: str = "nominatim") -> None:
+    def _cache_put(
+        self,
+        conn: sqlite3.Connection,
+        norm: str,
+        lat: Optional[float],
+        lon: Optional[float],
+        display_name: str,
+        source: str = "nominatim",
+    ) -> None:
         cur = conn.cursor()
         cur.execute(
             "INSERT OR REPLACE INTO addresses (normalized_address, latitude, longitude, display_name, source, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
@@ -827,7 +915,11 @@ class GeocodeTab(QWidget):
             if not data:
                 return None
             top = data[0]
-            return {"lat": float(top.get("lat")), "lon": float(top.get("lon")), "display_name": str(top.get("display_name", ""))}
+            return {
+                "lat": float(top.get("lat")),
+                "lon": float(top.get("lon")),
+                "display_name": str(top.get("display_name", "")),
+            }
         except Exception:
             return None
 
@@ -905,7 +997,9 @@ class GeocodeTab(QWidget):
                 cached = self._cache_get(conn, norm)
                 if cached:
                     total_cache_hits += 1
-                    lat = cached["lat"]; lon = cached["lon"]; disp = cached["display_name"]
+                    lat = cached["lat"]
+                    lon = cached["lon"]
+                    disp = cached["display_name"]
                     # if previously cached as no result, indicate 'cache-none'
                     source = "cache" if (lat is not None and lon is not None) else "cache-none"
                 else:
@@ -916,7 +1010,11 @@ class GeocodeTab(QWidget):
                     # 1) Full with ZIP
                     strategies.append((norm, "full"))
                     # 2) Without ZIP
-                    norm_no_zip = ", ".join([address, city, st, "USA"]) if zip5 else ", ".join([address, city, st, "USA"]) 
+                    norm_no_zip = (
+                        ", ".join([address, city, st, "USA"])
+                        if zip5
+                        else ", ".join([address, city, st, "USA"])
+                    )
                     strategies.append((norm_no_zip, "no-zip"))
                     # 3) With full territory name (if applicable)
                     terr = self._territory_full_name(st)
@@ -926,37 +1024,50 @@ class GeocodeTab(QWidget):
                     # 4) City+State only as last resort
                     strategies.append((f"{city}, {st}", "city-state"))
 
-                    got = None; which = ""
+                    got = None
+                    which = ""
                     for q, label in strategies:
                         result = self._nominatim_geocode(q, email)
                         if result:
-                            got = result; which = label
+                            got = result
+                            which = label
                             break
                         # rate limit between attempts
                         time.sleep(1.05)
                     if not got:
-                        lat = None; lon = None; disp = ""; source = "miss"
+                        lat = None
+                        lon = None
+                        disp = ""
+                        source = "miss"
                         self._cache_put(conn, norm, lat, lon, disp, source="none")
                     else:
-                        lat = got["lat"]; lon = got["lon"]; disp = got["display_name"]
+                        lat = got["lat"]
+                        lon = got["lon"]
+                        disp = got["display_name"]
                         self._cache_put(conn, norm, lat, lon, disp, source="nominatim")
                         total_geocoded += 1
                         source = f"nominatim:{which}"
-                out_rows.append({
-                    "id": site_id,
-                    "address": norm,
-                    "lat": lat if lat is not None else "",
-                    "lon": lon if lon is not None else "",
-                    "display_name": disp,
-                })
+                out_rows.append(
+                    {
+                        "id": site_id,
+                        "address": norm,
+                        "lat": lat if lat is not None else "",
+                        "lon": lon if lon is not None else "",
+                        "display_name": disp,
+                    }
+                )
                 processed += 1
                 if grand_total > 0:
                     self.progress.setValue(processed)
                 # Log per-site progress and keep UI responsive
                 if lat is not None and lon is not None:
-                    self.log_append(f"State {state}: [{i}/{len(rows)}] {site_id} -> {lat:.6f},{lon:.6f} ({source})")
+                    self.log_append(
+                        f"State {state}: [{i}/{len(rows)}] {site_id} -> {lat:.6f},{lon:.6f} ({source})"
+                    )
                 else:
-                    self.log_append(f"State {state}: [{i}/{len(rows)}] {site_id} -> no result ({source})")
+                    self.log_append(
+                        f"State {state}: [{i}/{len(rows)}] {site_id} -> no result ({source})"
+                    )
                 QCoreApplication.processEvents()
                 if i % 25 == 0:
                     self.log_append(f"State {state}: processed {i}/{len(rows)}")
@@ -968,17 +1079,25 @@ class GeocodeTab(QWidget):
                         out_csv = out_dir / "geocoded.csv"
                         self.log_append(f"State {state}: writing {len(out_rows)} rows to {out_csv}")
                         with out_csv.open("w", encoding="utf-8", newline="") as f:
-                            writer = csv.DictWriter(f, fieldnames=["id", "address", "lat", "lon", "display_name"])
+                            writer = csv.DictWriter(
+                                f, fieldnames=["id", "address", "lat", "lon", "display_name"]
+                            )
                             writer.writeheader()
                             writer.writerows(out_rows)
                         self.log_append(f"State {state}: wrote {len(out_rows)} rows to {out_csv}")
                         # Auto-refresh list/status and table if this state is selected
                         try:
-                            current = self.state_list.currentItem().text() if self.state_list.currentItem() else ""
+                            current = (
+                                self.state_list.currentItem().text()
+                                if self.state_list.currentItem()
+                                else ""
+                            )
                             self.refresh_state_list()
                             # Restore selection and refresh counters
                             if current:
-                                items = self.state_list.findItems(current, Qt.MatchFlag.MatchExactly)
+                                items = self.state_list.findItems(
+                                    current, Qt.MatchFlag.MatchExactly
+                                )
                                 if items:
                                     self.state_list.setCurrentItem(items[0])
                                     self._update_state_site_count(current)
