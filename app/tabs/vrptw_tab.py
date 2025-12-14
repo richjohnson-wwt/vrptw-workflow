@@ -235,10 +235,22 @@ class VRPTWTab(QWidget):
 
         # Gather all points used by routes
         all_coords = []
+        missing: set[str] = set()
         for _, seq_ids in self.last_solution["routes"]:
             for sid in seq_ids:
                 if sid in points:
                     all_coords.append(points[sid])
+                else:
+                    missing.add(str(sid))
+        if missing:
+            self.log_append(
+                f"Map note: {len(missing)} site id(s) from routes had no coordinates in clustered.csv: "
+                + ", ".join(sorted(list(missing))[:10])
+                + (" …" if len(missing) > 10 else "")
+            )
+            self.log_append(
+                "If these should appear, check clustered.csv for blank/invalid lat/lon for those ids."
+            )
         if not all_coords:
             QMessageBox.information(
                 self, "No coordinates", "The current solution has no mappable coordinates."
@@ -247,6 +259,15 @@ class VRPTWTab(QWidget):
         avg_lat = sum(lat for lat, _ in all_coords) / len(all_coords)
         avg_lon = sum(lon for _, lon in all_coords) / len(all_coords)
         m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles="OpenStreetMap")
+        # Ensure all points are visible regardless of initial zoom
+        try:
+            lats = [lat for lat, _ in all_coords]
+            lons = [lon for _, lon in all_coords]
+            sw = [min(lats), min(lons)]
+            ne = [max(lats), max(lons)]
+            m.fit_bounds([sw, ne])
+        except Exception:
+            pass
 
         # Color palette for up to many routes
         colors = [
@@ -271,6 +292,18 @@ class VRPTWTab(QWidget):
             "lightgray",
         ]
 
+        # Optional: cluster markers and jitter overlapping coordinates for visibility
+        marker_cluster = None
+        try:
+            from folium.plugins import MarkerCluster  # type: ignore
+
+            marker_cluster = MarkerCluster()
+            marker_cluster.add_to(m)
+        except Exception:
+            marker_cluster = None
+
+        seen_counts: dict[tuple[float, float], int] = {}
+
         # Plot each route
         for idx, (cluster_label, seq_ids) in enumerate(self.last_solution["routes"]):
             color = colors[idx % len(colors)]
@@ -288,16 +321,32 @@ class VRPTWTab(QWidget):
                 if sid not in points:
                     continue
                 lat, lon = points[sid]
+                # Jitter overlapping markers slightly so both can be clicked
+                key = (lat, lon)
+                n = seen_counts.get(key, 0)
+                if n > 0:
+                    # ~10 meters jitter per overlap (approx 1e-4 deg)
+                    jitter = 1e-4 * n
+                    lat += jitter
+                    lon += jitter
+                seen_counts[key] = n + 1
                 popup = folium.Popup(
                     html=f"<b>{sid}</b><br>{meta.get(sid,{}).get('address','')}<br>{meta.get(sid,{}).get('display_name','')}",
                     max_width=300,
                 )
-                folium.Marker(
+                marker = folium.Marker(
                     location=[lat, lon],
                     popup=popup,
                     tooltip=f"{order}. {sid}",
                     icon=folium.Icon(color=color, icon="info-sign"),
-                ).add_to(m)
+                )
+                try:
+                    if marker_cluster is not None:
+                        marker.add_to(marker_cluster)
+                    else:
+                        marker.add_to(m)
+                except Exception:
+                    marker.add_to(m)
 
         out_path = self.workspace / state / "routes_map.html"
         try:

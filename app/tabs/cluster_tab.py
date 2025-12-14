@@ -226,7 +226,9 @@ class ClusterTab(QWidget):
         left_box.addWidget(left_label)
         left_box.addWidget(self.state_list, 1)
 
-        actions_row = QHBoxLayout()
+        # Buttons are split into two rows to avoid expanding the left pane width
+        actions_row1 = QHBoxLayout()
+        actions_row2 = QHBoxLayout()
         self.cluster_btn = QPushButton("Cluster")
         self.cluster_btn.setEnabled(False)
         self.cluster_btn.clicked.connect(self.on_cluster)
@@ -242,15 +244,22 @@ class ClusterTab(QWidget):
         self.save_k_btn = QPushButton("Save K for State")
         self.save_k_btn.setToolTip("Save the current K value as a per-state override")
         self.save_k_btn.clicked.connect(self._on_save_k_for_state)
+        # Auto-suggest K button
+        self.auto_k_btn = QPushButton("Auto K")
+        self.auto_k_btn.setToolTip("Suggest K using silhouette score (2..10)")
+        self.auto_k_btn.clicked.connect(self.on_auto_k)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._on_refresh_view)
-        actions_row.addStretch(1)
-        actions_row.addWidget(refresh_btn)
-        actions_row.addWidget(self.preview_map_btn)
-        actions_row.addWidget(self.save_k_btn)
-        actions_row.addWidget(self.cluster_all_btn)
-        actions_row.addWidget(self.cluster_btn)
-        left_box.addLayout(actions_row)
+        actions_row1.addStretch(1)
+        actions_row1.addWidget(refresh_btn)
+        actions_row1.addWidget(self.preview_map_btn)
+        actions_row1.addWidget(self.save_k_btn)
+        actions_row2.addStretch(1)
+        actions_row2.addWidget(self.auto_k_btn)
+        actions_row2.addWidget(self.cluster_all_btn)
+        actions_row2.addWidget(self.cluster_btn)
+        left_box.addLayout(actions_row1)
+        left_box.addLayout(actions_row2)
 
         # Right: clustered.csv preview table
         right_box = QVBoxLayout()
@@ -347,6 +356,65 @@ class ClusterTab(QWidget):
                 self.table.setItem(r, c, QTableWidgetItem(val))
 
     # --- Preferences helpers: per-state K overrides ---
+
+    def on_auto_k(self) -> None:
+        # Suggest K using silhouette score over a candidate range for the selected state's geocoded.csv
+        state = self.state_list.currentItem().text() if self.state_list.currentItem() else ""
+        if not self.workspace or not state:
+            QMessageBox.information(self, "Select a state", "Select a state to analyze.")
+            return
+        geo_csv = self.workspace / state / "geocoded.csv"
+        if not geo_csv.exists():
+            QMessageBox.information(self, "No geocoded.csv", "Geocode first, then try Auto K.")
+            return
+        try:
+            import pandas as pd  # type: ignore
+            from sklearn.cluster import KMeans  # type: ignore
+            from sklearn.metrics import silhouette_score  # type: ignore
+            import numpy as np  # type: ignore
+        except Exception as e:
+            self.log_append(f"Auto K requires pandas, scikit-learn, numpy: {e}")
+            return
+        try:
+            df = pd.read_csv(geo_csv)
+            cols = {c.lower(): c for c in df.columns}
+            lat_col = cols.get("lat") or cols.get("latitude")
+            lon_col = cols.get("lon") or cols.get("longitude")
+            if not lat_col or not lon_col:
+                self.log_append("Auto K: lat/lon columns not found.")
+                return
+            X = df[[lat_col, lon_col]].to_numpy()
+            if len(X) < 3:
+                self.log_append("Auto K: need at least 3 points.")
+                return
+            n_unique = int(np.unique(X, axis=0).shape[0])
+            if n_unique < 3:
+                self.log_append("Auto K: fewer than 3 unique points; suggesting K=1.")
+                self.k_clusters.setValue(1)
+                return
+            k_min = 2
+            k_max = max(3, min(10, n_unique - 1))
+            best_k = None
+            best_score = -1.0
+            for k in range(k_min, k_max + 1):
+                try:
+                    labels = KMeans(n_clusters=k, n_init="auto", random_state=42).fit_predict(X)
+                    # Silhouette is undefined for single-label; guard by design with k>=2
+                    score = silhouette_score(X, labels)
+                    if score > best_score:
+                        best_score = score
+                        best_k = k
+                except Exception:
+                    continue
+            if best_k is None:
+                self.log_append("Auto K: failed to compute a suggestion.")
+                return
+            self.k_clusters.setValue(int(best_k))
+            self.log_append(
+                f"Auto K: suggested K={best_k} for state {state} (silhouette {best_score:.3f})."
+            )
+        except Exception as e:
+            self.log_append(f"Auto K failed: {e}")
 
     def on_preview_map(self) -> None:
         # Open a simple Folium map in browser for the selected state's clustered.csv

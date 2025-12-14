@@ -7,7 +7,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
-from PyQt6.QtCore import QCoreApplication, QMetaObject, QObject, QSettings, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import (
+    QCoreApplication,
+    QMetaObject,
+    QObject,
+    QSettings,
+    Qt,
+    QThread,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QFormLayout,
@@ -43,8 +52,10 @@ class GeocodeWorker(QObject):
         self.email = email
         self._cancel = False
 
+    @pyqtSlot()
     def request_cancel(self) -> None:
         # Called via queued connection from UI thread
+        self.log.emit("request_cancel method called; setting self._cancel flag to True")
         self._cancel = True
 
     # --- Worker-local helpers (no UI calls) ---
@@ -141,7 +152,7 @@ class GeocodeWorker(QObject):
             "countrycodes": "us,pr,gu,vi,mp,as",
         }
 
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp = requests.get(url, headers=headers, params=params, timeout=5)
 
         if resp.status_code != 200:
             # log resp.status_code + resp.text[:200]
@@ -207,10 +218,11 @@ class GeocodeWorker(QObject):
         grand_total = sum(len(v) for v in state_rows.values())
         processed = 0
         self.progress.emit(processed, grand_total)
-
+        cancelled = False
         for state in self.states:
             if self._cancel:
                 self.log.emit("Cancellation requested; stopping before next state…")
+                cancelled = True
                 break
             rows = state_rows.get(state, [])
             if not rows:
@@ -220,6 +232,7 @@ class GeocodeWorker(QObject):
             for i, r in enumerate(rows, start=1):
                 if self._cancel:
                     self.log.emit("Cancellation requested; finishing current row and stopping…")
+                    cancelled = True
                     break
                 site_id = str(r.get("id", "")).strip()
                 address = str(r.get("address", "")).strip()
@@ -253,10 +266,19 @@ class GeocodeWorker(QObject):
                     got = None
                     which = ""
                     for q, label in strategies:
+                        if self._cancel:
+                            self.log.emit("Cancellation requested; breaking before geocode loop…")
+                            cancelled = True
+                            break
                         res = self._nominatim_geocode(q)
                         if res:
                             got = res
                             which = label
+                            break
+                        # Check cancel again before sleeping to avoid delay
+                        if self._cancel:
+                            self.log.emit("Cancellation requested; breaking before sleep to avoid delay…")
+                            cancelled = True
                             break
                         time.sleep(1.05)
                     if not got:
@@ -266,12 +288,19 @@ class GeocodeWorker(QObject):
                         source = "miss"
                         self._cache_put(conn, norm, lat, lon, disp, source="none")
                     else:
-                        lat = got["lat"]
-                        lon = got["lon"]
-                        disp = got["display_name"]
-                        self._cache_put(conn, norm, lat, lon, disp, source="nominatim")
-                        total_geocoded += 1
-                        source = f"nominatim:{which}"
+                        # If match is coarse city/state centroid, do not cache/store lat/lon
+                        if which == "city-state":
+                            lat = None
+                            lon = None
+                            disp = ""
+                            source = "coarse-skip"
+                        else:
+                            lat = got["lat"]
+                            lon = got["lon"]
+                            disp = got["display_name"]
+                            self._cache_put(conn, norm, lat, lon, disp, source="nominatim")
+                            total_geocoded += 1
+                            source = f"nominatim:{which}"
                 out_rows.append(
                     {
                         "id": site_id,
@@ -309,10 +338,17 @@ class GeocodeWorker(QObject):
             except Exception as e:
                 self.log.emit(f"State {state}: failed writing geocoded.csv: {e}")
 
+            # If cancellation requested, stop after finishing current state write
+            if cancelled:
+                self.log.emit("Cancellation requested; breaking out of state loop…")
+                break
+
         self.finished.emit(total_lookups, total_cache_hits, total_geocoded)
 
 
 class GeocodeTab(QWidget):
+    # Signal to request cancellation on the worker via queued connection
+    cancel_requested = pyqtSignal()
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("GeocodeTab")
@@ -424,10 +460,10 @@ class GeocodeTab(QWidget):
         # Disable single-state geocode until a state is selected
         if hasattr(self, "geocode_btn"):
             self.geocode_btn.setEnabled(False)
-        # Disable geocode-all until workspace is valid and states found
+        # Enable Geocode All whenever a workspace is selected (tabs are reset on context change)
         if hasattr(self, "geocode_all_btn"):
             try:
-                self.geocode_all_btn.setEnabled(False)
+                self.geocode_all_btn.setEnabled(bool(self.workspace))
             except Exception:
                 pass
         # Disable cancel until a new run starts
@@ -608,6 +644,11 @@ class GeocodeTab(QWidget):
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.state_done.connect(self._on_worker_state_done)
         self.worker.finished.connect(self._on_worker_finished)
+        # Route cancel signal to worker using a queued connection (more reliable than invokeMethod)
+        try:
+            self.cancel_requested.connect(self.worker.request_cancel, Qt.ConnectionType.QueuedConnection)
+        except Exception:
+            pass
         # Ensure cleanup
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self.worker.deleteLater)
@@ -662,14 +703,40 @@ class GeocodeTab(QWidget):
         # Request cancel on the worker (queued to worker thread)
         try:
             if hasattr(self, "worker") and self.worker is not None:
-                QMetaObject.invokeMethod(
-                    self.worker, "request_cancel", Qt.ConnectionType.QueuedConnection
-                )
+                # Emit signal wired as queued connection to the worker slot
+                self.cancel_requested.emit()
+                # Nudge the thread to stop ASAP as a backup
+                if hasattr(self, "worker_thread") and self.worker_thread is not None:
+                    try:
+                        self.worker_thread.requestInterruption()
+                    except Exception:
+                        pass
+                # Fallback: also invoke the slot by name to cover any signal wiring issues
+                try:
+                    QMetaObject.invokeMethod(
+                        self.worker, "request_cancel", Qt.ConnectionType.QueuedConnection
+                    )
+                except Exception:
+                    self.log_append("Failed to emit cancel signal to worker")
+                    pass
+                # Last-resort: call directly (thread-safe here since we only set a boolean flag)
+                try:
+                    self.worker.request_cancel()
+                except Exception:
+                    self.log_append("Failed to call request_cancel directly on worker")
+                    pass
+                # Ask the thread to quit its event loop when run() returns
+                try:
+                    if hasattr(self, "worker_thread") and self.worker_thread is not None:
+                        self.worker_thread.quit()
+                except Exception:
+                    self.log_append("Failed to quit worker thread")
+                    pass
                 self.log_append("Cancel requested…")
                 if hasattr(self, "cancel_btn"):
                     self.cancel_btn.setEnabled(False)
         except Exception:
-            pass
+            self.log_append("Failed to request cancel")
 
     # ---------
     # View APIs
@@ -693,6 +760,7 @@ class GeocodeTab(QWidget):
             for st in states:
                 self.state_list.addItem(st)
         except Exception:
+            self.log_append("Failed to refresh state list")
             pass
         # Update single-state geocode button enabled state
         self.geocode_btn.setEnabled(self.state_list.currentItem() is not None)
