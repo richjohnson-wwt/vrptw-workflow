@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import requests
 from PyQt6.QtCore import (
     QCoreApplication,
     QMetaObject,
@@ -37,6 +36,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app.geocoding import GeocodingStrategy
+
 
 class GeocodeWorker(QObject):
     # Signals
@@ -45,11 +46,11 @@ class GeocodeWorker(QObject):
     state_done = pyqtSignal(str, int)  # state, rows_written
     finished = pyqtSignal(int, int, int)  # total_lookups, cache_hits, new_geocoded
 
-    def __init__(self, workspace: Path, states: List[str], email: str) -> None:
+    def __init__(self, workspace: Path, states: List[str], strategy: GeocodingStrategy) -> None:
         super().__init__()
         self.workspace = workspace
         self.states = states
-        self.email = email
+        self.strategy = strategy
         self._cancel = False
 
     @pyqtSlot()
@@ -138,52 +139,16 @@ class GeocodeWorker(QObject):
         )
         conn.commit()
 
-    def _nominatim_geocode(self, query: str) -> Optional[Dict[str, Any]]:
-        url = "https://nominatim.openstreetmap.org/search"
-        headers = {
-            "User-Agent": f"VRPTW-Workflow/0.1 (contact: {self.email})",
-            "Accept-Language": "en",
-        }
-        params = {
-            "q": query,
-            "format": "jsonv2",
-            "limit": 5,
-            "addressdetails": 1,
-            "countrycodes": "us,pr,gu,vi,mp,as",
-        }
-
-        resp = requests.get(url, headers=headers, params=params, timeout=5)
-
-        if resp.status_code != 200:
-            # log resp.status_code + resp.text[:200]
-            return None
-
-        try:
-            data = resp.json()
-        except ValueError:
-            # log resp.text[:200]
-            return None
-
-        if not data:
-            return None
-
-        # Pick the best street-level match
-        for item in data:
-            if item.get("lat") and item.get("lon"):
-                if item.get("type") in ("house", "building", "residential", "yes"):
-                    return {
-                        "lat": float(item["lat"]),
-                        "lon": float(item["lon"]),
-                        "display_name": item.get("display_name", ""),
-                    }
-
-        # fallback: first valid lat/lon
-        top = data[0]
-        return {
-            "lat": float(top["lat"]),
-            "lon": float(top["lon"]),
-            "display_name": top.get("display_name", ""),
-        }
+    def _geocode(self, query: str) -> Optional[Dict[str, Any]]:
+        """Geocode a query using the configured strategy.
+        
+        Args:
+            query: Address string to geocode
+            
+        Returns:
+            Dictionary with 'lat', 'lon', 'display_name' if successful, None otherwise
+        """
+        return self.strategy.geocode(query)
 
 
     def run(self) -> None:
@@ -253,7 +218,8 @@ class GeocodeWorker(QObject):
                     disp = cached["display_name"]
                     source = "cache" if (lat is not None and lon is not None) else "cache-none"
                 else:
-                    time.sleep(1.05)  # rate limit
+                    rate_delay = self.strategy.get_rate_limit_delay()
+                    time.sleep(rate_delay)  # rate limit
                     # multi-strategy
                     strategies = [(norm, "full")]
                     no_zip = ", ".join([address, city, st, "USA"])
@@ -270,7 +236,7 @@ class GeocodeWorker(QObject):
                             self.log.emit("Cancellation requested; breaking before geocode loop…")
                             cancelled = True
                             break
-                        res = self._nominatim_geocode(q)
+                        res = self._geocode(q)
                         if res:
                             got = res
                             which = label
@@ -280,7 +246,7 @@ class GeocodeWorker(QObject):
                             self.log.emit("Cancellation requested; breaking before sleep to avoid delay…")
                             cancelled = True
                             break
-                        time.sleep(1.05)
+                        time.sleep(rate_delay)
                     if not got:
                         lat = None
                         lon = None
@@ -298,9 +264,10 @@ class GeocodeWorker(QObject):
                             lat = got["lat"]
                             lon = got["lon"]
                             disp = got["display_name"]
-                            self._cache_put(conn, norm, lat, lon, disp, source="nominatim")
+                            provider_name = self.strategy.get_source_name()
+                            self._cache_put(conn, norm, lat, lon, disp, source=provider_name)
                             total_geocoded += 1
-                            source = f"nominatim:{which}"
+                            source = f"{provider_name}:{which}"
                 out_rows.append(
                     {
                         "id": site_id,
@@ -354,6 +321,7 @@ class GeocodeTab(QWidget):
         self.setObjectName("GeocodeTab")
         self.workspace: Optional[Path] = None
         self.settings = QSettings("VRPTW", "Workflow")
+        self.strategy: Optional[GeocodingStrategy] = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -621,6 +589,10 @@ class GeocodeTab(QWidget):
     def _start_geocoding(self, states: List[str], email: str) -> None:
         if not self.workspace:
             return
+        # Create strategy instance (will be configurable in the future)
+        from app.geocoding import NominatimStrategy
+        strategy = NominatimStrategy(email=email)
+        
         # Disable actions during run
         if hasattr(self, "geocode_btn"):
             self.geocode_btn.setEnabled(False)
@@ -636,7 +608,7 @@ class GeocodeTab(QWidget):
             self.progress.setValue(0)
         # Start worker thread
         self.worker_thread = QThread(self)
-        self.worker = GeocodeWorker(self.workspace, states, email)
+        self.worker = GeocodeWorker(self.workspace, states, strategy)
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
         # Connect signals
@@ -990,43 +962,6 @@ class GeocodeTab(QWidget):
             (norm, lat, lon, display_name, source),
         )
         conn.commit()
-
-    def _nominatim_geocode(self, query: str, email: str) -> Optional[Dict[str, Any]]:
-        url = "https://nominatim.openstreetmap.org/search"
-        headers = {
-            "User-Agent": f"VRPTW-Workflow/0.1 (+{email})",
-            "Accept-Language": "en",
-        }
-        params = {
-            "q": query,
-            "format": "json",
-            "limit": 1,
-            "addressdetails": 0,
-            # Include US and territories commonly present in client data
-            "countrycodes": "us,pr,gu,vi,mp,as",
-            # Providing email helps contact policy
-            "email": email,
-        }
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
-            if resp.status_code == 429:
-                # Too many requests; caller should slow down
-                self.log_append("Nominatim returned 429 Too Many Requests; backing off")
-                return None
-            if resp.status_code != 200:
-                self.log_append(f"Nominatim HTTP {resp.status_code}: {resp.text[:120]}")
-                return None
-            data = resp.json()
-            if not data:
-                return None
-            top = data[0]
-            return {
-                "lat": float(top.get("lat")),
-                "lon": float(top.get("lon")),
-                "display_name": str(top.get("display_name", "")),
-            }
-        except Exception:
-            return None
 
     def _territory_full_name(self, code: str) -> Optional[str]:
         mapping = {
