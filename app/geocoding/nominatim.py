@@ -1,9 +1,11 @@
 import random
 import re
+from typing import Any, Callable, Dict, Optional
+
 import requests
-from typing import Optional, Dict, Any, Callable
 
 from .strategy import GeocodingStrategy
+
 
 class NominatimStrategy(GeocodingStrategy):
     """
@@ -112,9 +114,7 @@ class NominatimStrategy(GeocodingStrategy):
                 return None
 
             if resp.status_code != 200:
-                self.logger(
-                    f"Nominatim HTTP {resp.status_code}: {resp.text[:120]}"
-                )
+                self.logger(f"Nominatim HTTP {resp.status_code}: {resp.text[:120]}")
                 return None
 
             data = resp.json()
@@ -156,9 +156,7 @@ class NominatimStrategy(GeocodingStrategy):
             if addr.get("country_code") != "us":
                 continue
 
-            has_transport = any(
-                key in addr for key in ("road", "pedestrian", "highway")
-            )
+            has_transport = any(key in addr for key in ("road", "pedestrian", "highway"))
             has_number = "house_number" in addr
 
             # Tier 1: true street address
@@ -192,7 +190,6 @@ class NominatimStrategy(GeocodingStrategy):
                 }
 
         return None
-
 
     # ------------------------------------------------------------------
     # Helpers

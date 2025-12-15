@@ -15,17 +15,72 @@
     uv add pandas xlrd openpyxl scikit-learn ortools folium pyyaml
 
     
+## Tests
+
+     # run tests
+     uv run pytest
+     
+     # run tests verbosely
+     uv run pytest -v
+     
+     # run specific test
+     uv run pytest tests/test_geocoding_cache.py
+
+     # run tests verbosely with short traceback
+     uv run pytest -v --tb=short
+
+
+
 ## Cache useful commands
 
-    sqlite3 -readonly -cmd ".headers on" -cmd ".mode box" ~/Documents/VRPTW/.cache/nominatim.sqlite "SELECT * FROM addresses LIMIT 50;"
+    sqlite3 ~/Documents/VRPTW/.cache/nominatim.sqlite
 
-    sqlite3 -readonly -cmd ".headers on" -cmd ".mode box" ~/Documents/VRPTW/.cache/nominatim.sqlite " SELECT id, normalized_address, latitude, longitude, display_name, updated_at FROM addresses WHERE normalized_address LIKE '%211 S 18th%' OR normalized_address LIKE '%10630 Parallel%' "
+    SELECT 
+        normalized_address,
+        source,
+        updated_at
+    FROM addresses 
+    WHERE latitude IS NULL AND longitude IS NULL
+    ORDER BY updated_at DESC;
 
-    sqlite3 -readonly -cmd ".headers on" -cmd ".mode box" ~/Documents/VRPTW/.cache/nominatim.sqlite " SELECT id, normalized_address, latitude, longitude, display_name, updated_at FROM addresses WHERE normalized_address LIKE '%211 S 18th%' OR normalized_address LIKE '%10630 Parallel%' "
+To see failed entries grouped by state:
 
-    sqlite3 ~/Documents/VRPTW/.cache/nominatim.sqlite " DELETE FROM addresses WHERE normalized_address LIKE '%211 S 18th%' OR normalized_address LIKE '%10630 Parallel%' "
+    SELECT 
+        SUBSTR(normalized_address, 
+            INSTR(normalized_address, ', ') + 2,
+            2) AS state,
+        COUNT(*) as failed_count
+    FROM addresses 
+    WHERE latitude IS NULL AND longitude IS NULL
+    GROUP BY state
+    ORDER BY failed_count DESC;
 
-    select normalized_address, latitude, longitude from addresses where latitude is null or longitude is null;
+To see the full details of failed entries:
+
+    SELECT 
+        id,
+        normalized_address,
+        display_name,
+        source,
+        updated_at
+    FROM addresses 
+    WHERE latitude IS NULL AND longitude IS NULL
+    LIMIT 20;
+
+If you want to run it as a one-liner from the terminal:
+
+    sqlite3 ~/Documents/VRPTW/.cache/nominatim.sqlite "SELECT normalized_address, source, updated_at FROM addresses WHERE latitude IS NULL AND longitude IS NULL ORDER BY updated_at DESC;"
+
+To see the breakdown:
+    
+    sqlite3 ~/Documents/VRPTW/.cache/nominatim.sqlite "SELECT 
+        CASE 
+            WHEN latitude IS NULL THEN 'Failed'
+            ELSE 'Successful'
+        END as status,
+        COUNT(*) as count
+    FROM addresses
+    GROUP BY status;"
 
     delete from addresses where latitude is null or longitude is null;
 
@@ -54,19 +109,3 @@ nominatim:city-state — matched using only "city, ST" (a coarse fallback; often
 nominatim:no-zip — address without ZIP ("address, city, ST, USA").
 nominatim:territory — address with a US territory full name substituted (if applicable).
 
-## TEMP NOTE - From Cascade on Friday, Dec 12
-Quick recap of what’s ready:
-
-VRPTW state-wide solve by default with Avg stops/day metric
-“View on Map” saves next to clustered.csv and auto-opens
-Parse sanitizes addresses (no “nan”); cache SQL in README
-Layouts fixed so subtabs fill space
-Codebase cleaned (ruff/autoflake/isort/black); cleanup commands in README
-
-Potential next steps for Monday:
-
-Structured Nominatim queries + duplicate geocode detection
-Arrival/start times in results and CSV exports
-Auto-K weighted clustering (balance by service minutes)
-Optional OSRM travel times for better realism
-Have a great weekend!

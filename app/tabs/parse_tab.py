@@ -6,13 +6,13 @@ from typing import Any, Dict, List, Optional
 
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
-    QComboBox,
     QPushButton,
     QSizePolicy,
     QTableWidget,
@@ -159,7 +159,11 @@ class ParseTab(QWidget):
 
         try:
             # Use selected sheet if available; otherwise default to first sheet (index 0)
-            if hasattr(self, "sheet_combo") and self.sheet_combo.isEnabled() and self.sheet_combo.count() > 0:
+            if (
+                hasattr(self, "sheet_combo")
+                and self.sheet_combo.isEnabled()
+                and self.sheet_combo.count() > 0
+            ):
                 selected_sheet = self.sheet_combo.currentText() or 0
             else:
                 selected_sheet = 0
@@ -180,6 +184,7 @@ class ParseTab(QWidget):
         mapping_def: Optional[Dict[str, Any]] = None
         try:
             from pathlib import Path as _Path
+
             import yaml  # type: ignore
 
             base_dir = _Path(__file__).resolve().parent.parent / "config" / "clients"
@@ -192,10 +197,14 @@ class ParseTab(QWidget):
                         with yml.open("r", encoding="utf-8") as f:
                             data = yaml.safe_load(f) or {}
                         name = str(data.get("name", "")).strip()
-                        required = [str(x).strip().lower() for x in (data.get("required_headers") or [])]
+                        required = [
+                            str(x).strip().lower() for x in (data.get("required_headers") or [])
+                        ]
                         fields = data.get("fields", {})
                         if name and required:
-                            client_defs.append({"name": name, "required": required, "fields": fields})
+                            client_defs.append(
+                                {"name": name, "required": required, "fields": fields}
+                            )
                     except Exception as e:
                         self.log_append(f"Skipping client YAML {yml.name}: {e}")
             for cdef in client_defs:

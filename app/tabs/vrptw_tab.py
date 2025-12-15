@@ -388,7 +388,7 @@ class VRPTWTab(QWidget):
                 label = f"{cid} (N={counts[cid]})"
                 self.cluster_combo.addItem(label, userData=cid)
             self.run_btn.setEnabled(True)
-        
+
         # Load previously solved solution if it exists
         loaded_solution = self._load_solution(state_code)
         if loaded_solution:
@@ -512,7 +512,7 @@ class VRPTWTab(QWidget):
                 "routes": [(cid_label, seq_ids) for (_, cid_label, _, seq_ids) in all_rows],
             }
             self.map_btn.setEnabled(True)
-            
+
             # Save solution to file for persistence
             self._save_solution(state, all_rows, mode, speed_mph, default_service_h)
         else:
@@ -884,7 +884,7 @@ class VRPTWTab(QWidget):
     ) -> None:
         """
         Save the solved routes to a solved.csv file in the state directory.
-        
+
         Args:
             state: State code
             all_rows: List of (state, cluster_label, vehicle_idx, seq_ids)
@@ -894,88 +894,92 @@ class VRPTWTab(QWidget):
         """
         if not self.workspace:
             return
-        
+
         from datetime import datetime
-        
+
         solved_path = self.workspace / state / "solved.csv"
         try:
             with solved_path.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
                 # Write header
-                writer.writerow([
-                    "state",
-                    "cluster",
-                    "vehicle",
-                    "stops",
-                    "sequence",
-                    "mode",
-                    "speed_mph",
-                    "service_hours",
-                    "solved_at",
-                ])
-                
+                writer.writerow(
+                    [
+                        "state",
+                        "cluster",
+                        "vehicle",
+                        "stops",
+                        "sequence",
+                        "mode",
+                        "speed_mph",
+                        "service_hours",
+                        "solved_at",
+                    ]
+                )
+
                 # Write routes
                 solved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 for st, cluster_label, vehicle_idx, seq_ids in all_rows:
-                    writer.writerow([
-                        st,
-                        cluster_label,
-                        vehicle_idx,
-                        len(seq_ids),
-                        ",".join(seq_ids),
-                        mode,
-                        speed_mph,
-                        service_hours,
-                        solved_at,
-                    ])
-            
+                    writer.writerow(
+                        [
+                            st,
+                            cluster_label,
+                            vehicle_idx,
+                            len(seq_ids),
+                            ",".join(seq_ids),
+                            mode,
+                            speed_mph,
+                            service_hours,
+                            solved_at,
+                        ]
+                    )
+
             self.log_append(f"Solution saved to {solved_path}")
         except Exception as e:
             self.log_append(f"Failed to save solution: {e}")
-    
+
     def _load_solution(self, state: str) -> Optional[dict]:
         """
         Load a previously solved solution from solved.csv if it exists.
-        
+
         Args:
             state: State code
-        
+
         Returns:
             Dictionary with solution data or None if no solution exists
         """
         if not self.workspace:
             return None
-        
+
         solved_path = self.workspace / state / "solved.csv"
         if not solved_path.exists():
             return None
-        
+
         try:
             all_rows: list[tuple[str, str, int, list[str]]] = []
             mode = "clusters"
             speed_mph = 50.0
             service_hours = 4.0
             solved_at = ""
-            
+
             with solved_path.open("r", encoding="utf-8", newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     st = row.get("state", state)
                     cluster_label = row.get("cluster", "")
                     vehicle_idx = int(row.get("vehicle", 0))
-                    stops = int(row.get("stops", 0))
+                    int(row.get("stops", 0))
                     sequence = row.get("sequence", "")
                     seq_ids = [s.strip() for s in sequence.split(",") if s.strip()]
-                    
+
                     # Get parameters from first row
                     if not all_rows:
                         mode = row.get("mode", "clusters")
                         speed_mph = float(row.get("speed_mph", 50.0))
                         service_hours = float(row.get("service_hours", 4.0))
                         solved_at = row.get("solved_at", "")
-                    
+
                     all_rows.append((st, cluster_label, vehicle_idx, seq_ids))
-            
+
             if all_rows:
                 self.log_append(f"Loaded solution from {solved_path} (solved at: {solved_at})")
                 return {
@@ -986,28 +990,28 @@ class VRPTWTab(QWidget):
                     "service_hours": service_hours,
                     "solved_at": solved_at,
                 }
-            
+
         except Exception as e:
             self.log_append(f"Failed to load solution from {solved_path}: {e}")
-        
+
         return None
-    
+
     def _display_loaded_solution(self, loaded_solution: dict) -> None:
         """
         Display a loaded solution in the results table.
-        
+
         Args:
             loaded_solution: Dictionary with solution data from _load_solution
         """
         all_rows = loaded_solution["all_rows"]
         state = loaded_solution["state"]
         mode = loaded_solution["mode"]
-        
+
         # Render results table
         headers = ["State", "Cluster", "Vehicle (day)", "Stops", "Sequence (site ids)"]
         self.results.setColumnCount(len(headers))
         self.results.setHorizontalHeaderLabels(headers)
-        
+
         if all_rows:
             self.results.setRowCount(len(all_rows))
             for r, (st, cid_label, v, seq_ids) in enumerate(all_rows):
@@ -1017,7 +1021,7 @@ class VRPTWTab(QWidget):
                 self.results.setItem(r, 3, QTableWidgetItem(str(len(seq_ids))))
                 self.results.setItem(r, 4, QTableWidgetItem(", ".join(seq_ids)))
             self.results.resizeColumnsToContents()
-            
+
             # Update last_solution for map functionality
             self.last_solution = {
                 "state": state,
@@ -1025,7 +1029,7 @@ class VRPTWTab(QWidget):
                 "routes": [(cid_label, seq_ids) for (_, cid_label, _, seq_ids) in all_rows],
             }
             self.map_btn.setEnabled(True)
-            
+
             # Show metrics
             vehicle_days = len(all_rows)
             total_stops = sum(len(seq_ids) for (_, _, _, seq_ids) in all_rows)

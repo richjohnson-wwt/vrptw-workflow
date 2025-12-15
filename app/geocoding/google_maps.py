@@ -7,14 +7,14 @@ from .strategy import GeocodingStrategy
 
 class GoogleMapsStrategy(GeocodingStrategy):
     """Geocoding strategy using Google Maps Geocoding API.
-    
+
     This is a stub implementation for future use.
-    
+
     Requirements:
     - Google Maps API key with Geocoding API enabled
     - Billing account (Google charges per request after free tier)
     - See: https://developers.google.com/maps/documentation/geocoding
-    
+
     Rate limits:
     - Default: 50 requests per second
     - Can be configured in Google Cloud Console
@@ -22,7 +22,7 @@ class GoogleMapsStrategy(GeocodingStrategy):
 
     def __init__(self, api_key: str):
         """Initialize Google Maps strategy.
-        
+
         Args:
             api_key: Google Maps API key
         """
@@ -31,10 +31,10 @@ class GoogleMapsStrategy(GeocodingStrategy):
 
     def geocode(self, query: str) -> Optional[Dict[str, Any]]:
         """Geocode an address using Google Maps API.
-        
+
         Args:
             query: Address string to geocode
-            
+
         Returns:
             Dictionary with 'lat', 'lon', 'display_name' if successful, None otherwise
         """
@@ -60,7 +60,7 @@ class GoogleMapsStrategy(GeocodingStrategy):
 
     def get_source_name(self) -> str:
         """Get the provider name for cache storage.
-        
+
         Returns:
             'google_maps'
         """
@@ -68,10 +68,10 @@ class GoogleMapsStrategy(GeocodingStrategy):
 
     def get_rate_limit_delay(self) -> float:
         """Get the recommended delay between requests.
-        
+
         Google Maps has a much higher rate limit (50 req/s default).
         A small delay is still recommended to be respectful.
-        
+
         Returns:
             0.02 seconds (50 requests per second)
         """

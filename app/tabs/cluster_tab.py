@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import csv
-from pathlib import Path
-from typing import List, Optional, Dict, Any
 import webbrowser
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
@@ -158,7 +158,9 @@ class ClusterTab(QWidget):
         lat_col = cols.get("lat") or cols.get("latitude")
         lon_col = cols.get("lon") or cols.get("longitude")
         if not lat_col or not lon_col:
-            self.log_append("Could not find latitude/longitude columns (lat/lon or latitude/longitude).")
+            self.log_append(
+                "Could not find latitude/longitude columns (lat/lon or latitude/longitude)."
+            )
             return
         try:
             X = df[[lat_col, lon_col]].to_numpy()
@@ -184,18 +186,22 @@ class ClusterTab(QWidget):
             labels = model.fit_predict(X)
             df["cluster_id"] = labels
             df.to_csv(out_csv, index=False)
-            self.log_append(f"State {state}: wrote clustered.csv with {k_eff} clusters -> {out_csv}")
+            self.log_append(
+                f"State {state}: wrote clustered.csv with {k_eff} clusters -> {out_csv}"
+            )
             # Log quick stats: min/median/max cluster sizes and % singletons
             try:
                 sizes = df["cluster_id"].value_counts().tolist()
                 if sizes:
                     sizes_sorted = sorted(sizes)
                     n = len(sizes_sorted)
-                    median = sizes_sorted[n // 2] if n % 2 == 1 else (
-                        (sizes_sorted[n // 2 - 1] + sizes_sorted[n // 2]) / 2
+                    median = (
+                        sizes_sorted[n // 2]
+                        if n % 2 == 1
+                        else ((sizes_sorted[n // 2 - 1] + sizes_sorted[n // 2]) / 2)
                     )
                     singletons = sum(1 for s in sizes_sorted if s == 1)
-                    pct_single = (100.0 * singletons / max(1, n))
+                    pct_single = 100.0 * singletons / max(1, n)
                     self.log_append(
                         f"State {state}: cluster sizes min/median/max = "
                         f"{sizes_sorted[0]}/{median}/{sizes_sorted[-1]} | "
@@ -368,10 +374,10 @@ class ClusterTab(QWidget):
             QMessageBox.information(self, "No geocoded.csv", "Geocode first, then try Auto K.")
             return
         try:
+            import numpy as np  # type: ignore
             import pandas as pd  # type: ignore
             from sklearn.cluster import KMeans  # type: ignore
             from sklearn.metrics import silhouette_score  # type: ignore
-            import numpy as np  # type: ignore
         except Exception as e:
             self.log_append(f"Auto K requires pandas, scikit-learn, numpy: {e}")
             return
@@ -453,8 +459,16 @@ class ClusterTab(QWidget):
             center = [df[lat_col].astype(float).mean(), df[lon_col].astype(float).mean()]
             m = folium.Map(location=center, zoom_start=7)
             palette = [
-                "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-                "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+                "#1f77b4",
+                "#ff7f0e",
+                "#2ca02c",
+                "#d62728",
+                "#9467bd",
+                "#8c564b",
+                "#e377c2",
+                "#7f7f7f",
+                "#bcbd22",
+                "#17becf",
             ]
             for _, r in df.iterrows():
                 try:
@@ -475,6 +489,7 @@ class ClusterTab(QWidget):
                 self.log_append(f"Saved map to {out_html}")
         except Exception as e:
             self.log_append(f"Failed to build map preview: {e}")
+
     def _prefs_path(self) -> Optional[Path]:
         try:
             return (self.workspace / "cluster_prefs.json") if self.workspace else None
