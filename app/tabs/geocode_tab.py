@@ -44,7 +44,7 @@ class GeocodeWorker(QObject):
     log = pyqtSignal(str)
     progress = pyqtSignal(int, int)  # processed, total
     state_done = pyqtSignal(str, int)  # state, rows_written
-    finished = pyqtSignal(int, int, int)  # total_lookups, cache_hits, new_geocoded
+    finished = pyqtSignal(int, int, int, int)  # total_lookups, cache_hits, new_geocoded, total_errors
 
     def __init__(self, workspace: Path, states: List[str], strategy: GeocodingStrategy) -> None:
         super().__init__()
@@ -155,13 +155,20 @@ class GeocodeWorker(QObject):
         # Geocode states; emit signals instead of touching UI
         if not self.workspace:
             self.log.emit("No workspace selected.")
-            self.finished.emit(0, 0, 0)
+            self.finished.emit(0, 0, 0, 0)
             return
+        
+        # Set up strategy logger to emit diagnostic messages
+        # Check if strategy has a logger attribute (NominatimStrategy does)
+        if hasattr(self.strategy, 'logger'):
+            self.strategy.logger = lambda msg: self.log.emit(f"[Strategy] {msg}")
+        
         conn = self._ensure_cache()
         self.log.emit(f"Using cache: {self._cache_path()}")
         total_lookups = 0
         total_cache_hits = 0
         total_geocoded = 0
+        total_errors = 0
 
         # Pre-read rows to know grand total
         state_rows: Dict[str, List[Dict[str, str]]] = {}
@@ -194,6 +201,7 @@ class GeocodeWorker(QObject):
                 continue
             self.log.emit(f"State {state}: reading {self.workspace / state / 'addresses.csv'}")
             out_rows: List[Dict[str, Any]] = []
+            error_rows: List[Dict[str, Any]] = []
             for i, r in enumerate(rows, start=1):
                 if self._cancel:
                     self.log.emit("Cancellation requested; finishing current row and stopping…")
@@ -205,6 +213,19 @@ class GeocodeWorker(QObject):
                 st = str(r.get("state", "")).strip()
                 zip5 = str(r.get("zip", "")).strip()
                 if not (address and city and st and zip5):
+                    # Track addresses with missing required fields
+                    error_rows.append({
+                        "id": site_id,
+                        "address": address,
+                        "city": city,
+                        "state": st,
+                        "zip": zip5,
+                        "normalized_address": "",
+                        "strategy": self.strategy.get_source_name(),
+                        "reason": "missing_fields",
+                        "attempted_queries": 0,
+                    })
+                    total_errors += 1
                     processed += 1
                     self.progress.emit(processed, grand_total)
                     continue
@@ -216,7 +237,39 @@ class GeocodeWorker(QObject):
                     lat = cached["lat"]
                     lon = cached["lon"]
                     disp = cached["display_name"]
-                    source = "cache" if (lat is not None and lon is not None) else "cache-none"
+                    if lat is not None and lon is not None:
+                        # Successful cached result - add to output
+                        source = "cache"
+                        out_rows.append({
+                            "id": site_id,
+                            "address": norm,
+                            "lat": lat,
+                            "lon": lon,
+                            "display_name": disp,
+                        })
+                        self.log.emit(
+                            f"State {state}: [{i}/{len(rows)}] {site_id} -> {lat:.6f},{lon:.6f} (cache)"
+                        )
+                    else:
+                        # Cached failure - add to errors
+                        error_rows.append({
+                            "id": site_id,
+                            "address": address,
+                            "city": city,
+                            "state": st,
+                            "zip": zip5,
+                            "normalized_address": norm,
+                            "strategy": self.strategy.get_source_name(),
+                            "reason": "cached_failure",
+                            "attempted_queries": 0,  # Already attempted previously
+                        })
+                        total_errors += 1
+                        self.log.emit(
+                            f"State {state}: [{i}/{len(rows)}] {site_id} -> cached failure (previously failed)"
+                        )
+                    processed += 1
+                    self.progress.emit(processed, grand_total)
+                    continue
                 else:
                     rate_delay = self.strategy.get_rate_limit_delay()
                     time.sleep(rate_delay)  # rate limit
@@ -248,19 +301,44 @@ class GeocodeWorker(QObject):
                             break
                         time.sleep(rate_delay)
                     if not got:
-                        lat = None
-                        lon = None
-                        disp = ""
-                        source = "miss"
-                        self._cache_put(conn, norm, lat, lon, disp, source="none")
+                        # No geocoding result found - add to errors
+                        error_rows.append({
+                            "id": site_id,
+                            "address": address,
+                            "city": city,
+                            "state": st,
+                            "zip": zip5,
+                            "normalized_address": norm,
+                            "strategy": self.strategy.get_source_name(),
+                            "reason": "no_result",
+                            "attempted_queries": len(strategies),
+                        })
+                        total_errors += 1
+                        self._cache_put(conn, norm, None, None, "", source="none")
+                        self.log.emit(
+                            f"State {state}: [{i}/{len(rows)}] {site_id} -> no result (tried {len(strategies)} queries)"
+                        )
                     else:
                         # If match is coarse city/state centroid, do not cache/store lat/lon
                         if which == "city-state":
-                            lat = None
-                            lon = None
-                            disp = ""
-                            source = "coarse-skip"
+                            # Coarse match - add to errors
+                            error_rows.append({
+                                "id": site_id,
+                                "address": address,
+                                "city": city,
+                                "state": st,
+                                "zip": zip5,
+                                "normalized_address": norm,
+                                "strategy": self.strategy.get_source_name(),
+                                "reason": "coarse_skip",
+                                "attempted_queries": len(strategies),
+                            })
+                            total_errors += 1
+                            self.log.emit(
+                                f"State {state}: [{i}/{len(rows)}] {site_id} -> coarse match skipped (city/state only)"
+                            )
                         else:
+                            # Success - add to output
                             lat = got["lat"]
                             lon = got["lon"]
                             disp = got["display_name"]
@@ -268,24 +346,16 @@ class GeocodeWorker(QObject):
                             self._cache_put(conn, norm, lat, lon, disp, source=provider_name)
                             total_geocoded += 1
                             source = f"{provider_name}:{which}"
-                out_rows.append(
-                    {
-                        "id": site_id,
-                        "address": norm,
-                        "lat": lat if lat is not None else "",
-                        "lon": lon if lon is not None else "",
-                        "display_name": disp,
-                    }
-                )
-                # per-row log & progress
-                if lat is not None and lon is not None:
-                    self.log.emit(
-                        f"State {state}: [{i}/{len(rows)}] {site_id} -> {lat:.6f},{lon:.6f} ({source})"
-                    )
-                else:
-                    self.log.emit(
-                        f"State {state}: [{i}/{len(rows)}] {site_id} -> no result ({source})"
-                    )
+                            out_rows.append({
+                                "id": site_id,
+                                "address": norm,
+                                "lat": lat,
+                                "lon": lon,
+                                "display_name": disp,
+                            })
+                            self.log.emit(
+                                f"State {state}: [{i}/{len(rows)}] {site_id} -> {lat:.6f},{lon:.6f} ({source})"
+                            )
                 processed += 1
                 self.progress.emit(processed, grand_total)
 
@@ -293,6 +363,8 @@ class GeocodeWorker(QObject):
             try:
                 out_dir = self.workspace / state
                 out_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Write successful geocodes
                 out_csv = out_dir / "geocoded.csv"
                 with out_csv.open("w", encoding="utf-8", newline="") as f:
                     writer = csv.DictWriter(
@@ -300,17 +372,30 @@ class GeocodeWorker(QObject):
                     )
                     writer.writeheader()
                     writer.writerows(out_rows)
-                self.log.emit(f"State {state}: wrote {len(out_rows)} rows to {out_csv}")
+                self.log.emit(f"State {state}: wrote {len(out_rows)} successful geocodes to {out_csv}")
+                
+                # Write geocoding errors if any
+                if error_rows:
+                    error_csv = out_dir / "geocode-errors.csv"
+                    with error_csv.open("w", encoding="utf-8", newline="") as f:
+                        writer = csv.DictWriter(
+                            f, fieldnames=["id", "address", "city", "state", "zip", 
+                                          "normalized_address", "strategy", "reason", "attempted_queries"]
+                        )
+                        writer.writeheader()
+                        writer.writerows(error_rows)
+                    self.log.emit(f"State {state}: wrote {len(error_rows)} failed geocodes to {error_csv}")
+                
                 self.state_done.emit(state, len(out_rows))
             except Exception as e:
-                self.log.emit(f"State {state}: failed writing geocoded.csv: {e}")
+                self.log.emit(f"State {state}: failed writing output files: {e}")
 
             # If cancellation requested, stop after finishing current state write
             if cancelled:
                 self.log.emit("Cancellation requested; breaking out of state loop…")
                 break
 
-        self.finished.emit(total_lookups, total_cache_hits, total_geocoded)
+        self.finished.emit(total_lookups, total_cache_hits, total_geocoded, total_errors)
 
 
 class GeocodeTab(QWidget):
@@ -590,6 +675,7 @@ class GeocodeTab(QWidget):
         if not self.workspace:
             return
         # Create strategy instance (will be configurable in the future)
+        # Logger will be set up by the worker thread
         from app.geocoding import NominatimStrategy
         strategy = NominatimStrategy(email=email)
         
@@ -654,7 +740,7 @@ class GeocodeTab(QWidget):
                 # If the finished state is selected, reload table
                 self.on_state_selected(state)
 
-    def _on_worker_finished(self, total_lookups: int, cache_hits: int, new_geocoded: int) -> None:
+    def _on_worker_finished(self, total_lookups: int, cache_hits: int, new_geocoded: int, total_errors: int) -> None:
         # Re-enable actions
         if hasattr(self, "geocode_btn"):
             self.geocode_btn.setEnabled(self.state_list.currentItem() is not None)
@@ -668,7 +754,8 @@ class GeocodeTab(QWidget):
         if hasattr(self, "progress") and self.progress.maximum() > 0:
             self.progress.setValue(self.progress.maximum())
         self.log_append(
-            f"Geocoding complete. Lookups: {total_lookups}, cache hits: {cache_hits}, new: {new_geocoded}"
+            f"Geocoding complete. Lookups: {total_lookups}, cache hits: {cache_hits}, "
+            f"successful: {new_geocoded}, failed: {total_errors}"
         )
 
     def _on_cancel_clicked(self) -> None:

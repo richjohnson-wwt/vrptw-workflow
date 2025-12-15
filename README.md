@@ -36,9 +36,9 @@
 ## Nominatim Manual test
 
      curl -G "https://nominatim.openstreetmap.org/search" \
-        --data-urlencode "street=3146 PEACHTREE ROAD N.E." \
-        --data-urlencode "city=ATLANTA" \
-        --data-urlencode "state=GA" \
+        --data-urlencode "3500 SE Frank Phillips, 2nd floor" \
+        --data-urlencode "city=Bartlesville" \
+        --data-urlencode "state=OK" \
         --data-urlencode "country=USA" \
         --data-urlencode "format=jsonv2" \
         -H "User-Agent: VRPTW-Workflow/0.1 (contact: rich.johnson@wwt.com)" | jq
