@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,14 +15,16 @@ from PyQt6.QtCore import (
     pyqtSignal,
     pyqtSlot,
 )
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QAction, QTextCursor
 from PyQt6.QtWidgets import (
+    QDialog,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -36,7 +37,105 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.geocoding import GeocodingStrategy
+from app.geocoding import GeocodingStrategy, GeocodingCache
+
+
+class ClearCacheConfirmationDialog(QDialog):
+    """
+    Custom confirmation dialog for clearing the entire cache.
+    Requires user to type "YES" to enable the confirmation button.
+    """
+    
+    def __init__(self, cache_stats: Dict[str, int], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Clear Entire Cache - Confirmation Required")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        
+        # Warning banner
+        warning_banner = QLabel("⚠️  WARNING: DESTRUCTIVE ACTION  ⚠️")
+        warning_banner.setStyleSheet("""
+            QLabel {
+                background-color: #ff6b6b;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+        """)
+        warning_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(warning_banner)
+        
+        # Warning message
+        warning_text = QLabel(
+            "You are about to delete the ENTIRE geocoding cache.\n\n"
+            "This action will:\n"
+            "• Delete ALL cached geocoding results for ALL states\n"
+            "• Require re-geocoding ALL addresses on the next run\n"
+            "• Cannot be undone\n\n"
+            "Consider using the context menu to clear specific states or sites instead."
+        )
+        warning_text.setWordWrap(True)
+        warning_text.setStyleSheet("font-size: 12px; padding: 10px;")
+        layout.addWidget(warning_text)
+        
+        # Cache statistics
+        stats_label = QLabel(
+            f"<b>Cache Statistics:</b><br>"
+            f"Total entries: {cache_stats.get('total', 0)}<br>"
+            f"Successful: {cache_stats.get('successful', 0)}<br>"
+            f"Failed: {cache_stats.get('failed', 0)}"
+        )
+        stats_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px;")
+        layout.addWidget(stats_label)
+        
+        # Confirmation instruction
+        instruction = QLabel(
+            '<b>To confirm, type "YES" (without quotes) in the box below:</b>'
+        )
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
+        
+        # Text input for confirmation
+        self.confirmation_input = QLineEdit()
+        self.confirmation_input.setPlaceholderText("Type YES here to confirm")
+        self.confirmation_input.textChanged.connect(self._on_text_changed)
+        layout.addWidget(self.confirmation_input)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_btn)
+        
+        self.confirm_btn = QPushButton("Clear Entire Cache")
+        self.confirm_btn.setEnabled(False)  # Disabled until "YES" is typed
+        self.confirm_btn.setStyleSheet("""
+            QPushButton:enabled {
+                background-color: #d32f2f;
+                color: white;
+                font-weight: bold;
+                padding: 8px 16px;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.confirm_btn.clicked.connect(self.accept)
+        button_layout.addWidget(self.confirm_btn)
+        
+        layout.addLayout(button_layout)
+    
+    def _on_text_changed(self, text: str):
+        """Enable confirm button only when 'YES' is typed."""
+        self.confirm_btn.setEnabled(text == "YES")
 
 
 class GeocodeWorker(QObject):
@@ -52,6 +151,7 @@ class GeocodeWorker(QObject):
         self.states = states
         self.strategy = strategy
         self._cancel = False
+        self.cache = GeocodingCache()
 
     @pyqtSlot()
     def request_cancel(self) -> None:
@@ -60,39 +160,6 @@ class GeocodeWorker(QObject):
         self._cancel = True
 
     # --- Worker-local helpers (no UI calls) ---
-    def _cache_path(self) -> Path:
-        base = Path.home() / "Documents" / "VRPTW" / ".cache"
-        base.mkdir(parents=True, exist_ok=True)
-        return base / "nominatim.sqlite"
-
-    def _ensure_cache(self) -> sqlite3.Connection:
-        db_path = self._cache_path()
-        conn = sqlite3.connect(str(db_path))
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS addresses (
-              id INTEGER PRIMARY KEY,
-              normalized_address TEXT UNIQUE,
-              latitude REAL,
-              longitude REAL,
-              display_name TEXT,
-              source TEXT,
-              updated_at TEXT
-            )
-            """
-        )
-        cur.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_addresses_norm ON addresses(normalized_address)"
-        )
-        conn.commit()
-        return conn
-
-    @staticmethod
-    def _normalize_address(address: str, city: str, state: str, zip5: str) -> str:
-        parts = [address.strip(), city.strip(), f"{state.strip()} {zip5.strip()}", "USA"]
-        return ", ".join([p for p in parts if p])
-
     @staticmethod
     def _territory_full_name(code: str) -> Optional[str]:
         mapping = {
@@ -104,40 +171,6 @@ class GeocodeWorker(QObject):
             "DC": "District of Columbia",
         }
         return mapping.get(code.upper())
-
-    @staticmethod
-    def _cache_get(conn: sqlite3.Connection, norm: str) -> Optional[Dict[str, Any]]:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT latitude, longitude, display_name, source, updated_at FROM addresses WHERE normalized_address = ?",
-            (norm,),
-        )
-        row = cur.fetchone()
-        if row:
-            return {
-                "lat": row[0],
-                "lon": row[1],
-                "display_name": row[2],
-                "source": row[3],
-                "updated_at": row[4],
-            }
-        return None
-
-    @staticmethod
-    def _cache_put(
-        conn: sqlite3.Connection,
-        norm: str,
-        lat: Optional[float],
-        lon: Optional[float],
-        display_name: str,
-        source: str = "nominatim",
-    ) -> None:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT OR REPLACE INTO addresses (normalized_address, latitude, longitude, display_name, source, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-            (norm, lat, lon, display_name, source),
-        )
-        conn.commit()
 
     def _geocode(self, query: str) -> Optional[Dict[str, Any]]:
         """Geocode a query using the configured strategy.
@@ -163,8 +196,7 @@ class GeocodeWorker(QObject):
         if hasattr(self.strategy, 'logger'):
             self.strategy.logger = lambda msg: self.log.emit(f"[Strategy] {msg}")
         
-        conn = self._ensure_cache()
-        self.log.emit(f"Using cache: {self._cache_path()}")
+        self.log.emit(f"Using cache: {self.cache.get_cache_path()}")
         total_lookups = 0
         total_cache_hits = 0
         total_geocoded = 0
@@ -229,9 +261,9 @@ class GeocodeWorker(QObject):
                     processed += 1
                     self.progress.emit(processed, grand_total)
                     continue
-                norm = self._normalize_address(address, city, st, zip5)
+                norm = GeocodingCache.normalize_address(address, city, st, zip5)
                 total_lookups += 1
-                cached = self._cache_get(conn, norm)
+                cached = self.cache.get(norm)
                 if cached:
                     total_cache_hits += 1
                     lat = cached["lat"]
@@ -314,7 +346,7 @@ class GeocodeWorker(QObject):
                             "attempted_queries": len(strategies),
                         })
                         total_errors += 1
-                        self._cache_put(conn, norm, None, None, "", source="none")
+                        self.cache.put(norm, None, None, "", source="none")
                         self.log.emit(
                             f"State {state}: [{i}/{len(rows)}] {site_id} -> no result (tried {len(strategies)} queries)"
                         )
@@ -343,7 +375,7 @@ class GeocodeWorker(QObject):
                             lon = got["lon"]
                             disp = got["display_name"]
                             provider_name = self.strategy.get_source_name()
-                            self._cache_put(conn, norm, lat, lon, disp, source=provider_name)
+                            self.cache.put(norm, lat, lon, disp, source=provider_name)
                             total_geocoded += 1
                             source = f"{provider_name}:{which}"
                             out_rows.append({
@@ -407,6 +439,7 @@ class GeocodeTab(QWidget):
         self.workspace: Optional[Path] = None
         self.settings = QSettings("VRPTW", "Workflow")
         self.strategy: Optional[GeocodingStrategy] = None
+        self.cache = GeocodingCache()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -547,6 +580,8 @@ class GeocodeTab(QWidget):
         self.state_list = QListWidget()
         self.state_list.setMinimumWidth(140)
         self.state_list.currentTextChanged.connect(self.on_state_selected)
+        self.state_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.state_list.customContextMenuRequested.connect(self._show_state_context_menu)
         left_box.addWidget(left_label)
         left_box.addWidget(self.state_list, 1)
         # Status row: site count, geocode status, refresh button
@@ -573,6 +608,8 @@ class GeocodeTab(QWidget):
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setColumnCount(0)
         self.table.setRowCount(0)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
         right_box.addWidget(right_label)
         right_box.addWidget(self.table, 1)
 
@@ -954,6 +991,35 @@ class GeocodeTab(QWidget):
         except Exception:
             pass
         name_to_index = {str(h).strip().lower(): i for i, h in enumerate(headers)}
+        
+        # Set fixed widths for narrow columns that shouldn't grow
+        # Use Fixed resize mode to prevent these columns from stretching
+        if "id" in name_to_index:
+            idx = name_to_index["id"]
+            try:
+                header_view.setSectionResizeMode(idx, QHeaderView.ResizeMode.Fixed)
+            except Exception:
+                pass
+            self.table.setColumnWidth(idx, 80)
+        
+        if "lat" in name_to_index:
+            idx = name_to_index["lat"]
+            try:
+                header_view.setSectionResizeMode(idx, QHeaderView.ResizeMode.Fixed)
+            except Exception:
+                pass
+            self.table.setColumnWidth(idx, 100)
+            # Latitude values are typically 7-10 characters (e.g., "-123.456789")
+        
+        if "lon" in name_to_index:
+            idx = name_to_index["lon"]
+            try:
+                header_view.setSectionResizeMode(idx, QHeaderView.ResizeMode.Fixed)
+            except Exception:
+                pass
+            self.table.setColumnWidth(idx, 100)
+            # Longitude values are typically 7-10 characters (e.g., "-123.456789")
+        
         if "state" in name_to_index:
             idx = name_to_index["state"]
             try:
@@ -961,6 +1027,7 @@ class GeocodeTab(QWidget):
             except Exception:
                 pass
             self.table.setColumnWidth(idx, 50)
+        
         if "zip" in name_to_index:
             idx = name_to_index["zip"]
             try:
@@ -985,71 +1052,6 @@ class GeocodeTab(QWidget):
             except Exception:
                 pass
 
-    def _cache_path(self) -> Path:
-        base = Path.home() / "Documents" / "VRPTW" / ".cache"
-        base.mkdir(parents=True, exist_ok=True)
-        return base / "nominatim.sqlite"
-
-    def _ensure_cache(self) -> sqlite3.Connection:
-        db_path = self._cache_path()
-        conn = sqlite3.connect(str(db_path))
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS addresses (
-              id INTEGER PRIMARY KEY,
-              normalized_address TEXT UNIQUE,
-              latitude REAL,
-              longitude REAL,
-              display_name TEXT,
-              source TEXT,
-              updated_at TEXT
-            )
-            """
-        )
-        cur.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_addresses_norm ON addresses(normalized_address)"
-        )
-        conn.commit()
-        return conn
-
-    def _normalize_address(self, address: str, city: str, state: str, zip5: str) -> str:
-        parts = [address.strip(), city.strip(), f"{state.strip()} {zip5.strip()}", "USA"]
-        return ", ".join([p for p in parts if p])
-
-    def _cache_get(self, conn: sqlite3.Connection, norm: str) -> Optional[Dict[str, Any]]:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT latitude, longitude, display_name, source, updated_at FROM addresses WHERE normalized_address = ?",
-            (norm,),
-        )
-        row = cur.fetchone()
-        if row:
-            return {
-                "lat": row[0],
-                "lon": row[1],
-                "display_name": row[2],
-                "source": row[3],
-                "updated_at": row[4],
-            }
-        return None
-
-    def _cache_put(
-        self,
-        conn: sqlite3.Connection,
-        norm: str,
-        lat: Optional[float],
-        lon: Optional[float],
-        display_name: str,
-        source: str = "nominatim",
-    ) -> None:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT OR REPLACE INTO addresses (normalized_address, latitude, longitude, display_name, source, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-            (norm, lat, lon, display_name, source),
-        )
-        conn.commit()
-
     def _territory_full_name(self, code: str) -> Optional[str]:
         mapping = {
             "PR": "Puerto Rico",
@@ -1063,24 +1065,23 @@ class GeocodeTab(QWidget):
 
     def on_clear_cache(self) -> None:
         # Clear the shared SQLite cache and refresh UI. Do not reference geocoding counters here.
-        # Confirm cache clear
-        confirm = QMessageBox.question(
-            self,
-            "Clear Geocode Cache?",
-            "This deletes the shared geocode cache for all clients/workspaces. Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
+        # Get cache statistics for the confirmation dialog
+        try:
+            cache_stats = self.cache.get_cache_stats()
+        except Exception:
+            cache_stats = {"total": 0, "successful": 0, "failed": 0}
+        
+        # Show custom confirmation dialog that requires typing "YES"
+        dialog = ClearCacheConfirmationDialog(cache_stats, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            p = self._cache_path()
-            if p.exists():
-                p.unlink()
+            cache_path = self.cache.get_cache_path()
+            if self.cache.clear():
                 # Focus log tab and report
                 if hasattr(self, "subtabs"):
                     self.subtabs.setCurrentIndex(0)
-                self.log_append(f"Cache cleared: {p}")
+                self.log_append(f"Cache cleared: {cache_path}")
             else:
                 if hasattr(self, "subtabs"):
                     self.subtabs.setCurrentIndex(0)
@@ -1096,3 +1097,134 @@ class GeocodeTab(QWidget):
             self._update_state_site_count(current)
             self._update_state_geocode_status(current)
         # Nothing else to do in cache clear
+
+    def _show_state_context_menu(self, position) -> None:
+        """Show context menu for state list."""
+        item = self.state_list.itemAt(position)
+        if not item:
+            return
+        
+        state_code = item.text()
+        
+        # Get cache stats for this state
+        try:
+            stats = self.cache.get_cache_stats(state_code=state_code)
+            total = stats["total"]
+        except Exception:
+            total = 0
+        
+        menu = QMenu(self)
+        
+        # Clear cache for this state
+        clear_action = QAction(f"Clear Cache for {state_code} ({total} entries)", self)
+        clear_action.triggered.connect(lambda: self._clear_cache_for_state(state_code))
+        menu.addAction(clear_action)
+        
+        # Show cache statistics
+        menu.addSeparator()
+        stats_action = QAction(f"Cache Stats: {stats.get('successful', 0)} successful, {stats.get('failed', 0)} failed", self)
+        stats_action.setEnabled(False)  # Just informational
+        menu.addAction(stats_action)
+        
+        menu.exec(self.state_list.mapToGlobal(position))
+    
+    def _show_table_context_menu(self, position) -> None:
+        """Show context menu for geocoded table."""
+        row = self.table.rowAt(position.y())
+        if row < 0:
+            return
+        
+        # Get the address from the table (column 1 is "address")
+        address_item = self.table.item(row, 1)
+        if not address_item:
+            return
+        
+        normalized_address = address_item.text()
+        
+        # Get site ID for display (column 0)
+        id_item = self.table.item(row, 0)
+        site_id = id_item.text() if id_item else "Unknown"
+        
+        menu = QMenu(self)
+        
+        # Clear cache for this specific site
+        clear_action = QAction(f"Clear Cache for Site {site_id}", self)
+        clear_action.triggered.connect(lambda: self._clear_cache_for_site(normalized_address, site_id))
+        menu.addAction(clear_action)
+        
+        menu.exec(self.table.mapToGlobal(position))
+    
+    def _clear_cache_for_state(self, state_code: str) -> None:
+        """Clear cache entries for a specific state."""
+        # Confirm
+        stats = self.cache.get_cache_stats(state_code=state_code)
+        total = stats["total"]
+        
+        if total == 0:
+            QMessageBox.information(
+                self,
+                "No Cache Entries",
+                f"No cache entries found for state {state_code}.",
+            )
+            return
+        
+        confirm = QMessageBox.question(
+            self,
+            "Clear State Cache?",
+            f"Clear {total} cache entries for state {state_code}?\n\n"
+            f"({stats['successful']} successful, {stats['failed']} failed)\n\n"
+            f"These addresses will be re-geocoded on the next run.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            deleted = self.cache.clear_by_state(state_code)
+            # Focus log tab and report
+            if hasattr(self, "subtabs"):
+                self.subtabs.setCurrentIndex(0)
+            self.log_append(f"Cleared {deleted} cache entries for state {state_code}")
+            
+            # Refresh UI
+            self._update_state_geocode_status(state_code)
+        except Exception as e:
+            if hasattr(self, "subtabs"):
+                self.subtabs.setCurrentIndex(0)
+            self.log_append(f"Failed to clear cache for state {state_code}: {e}")
+    
+    def _clear_cache_for_site(self, normalized_address: str, site_id: str) -> None:
+        """Clear cache entry for a specific site."""
+        confirm = QMessageBox.question(
+            self,
+            "Clear Site Cache?",
+            f"Clear cache for site {site_id}?\n\n"
+            f"Address: {normalized_address}\n\n"
+            f"This address will be re-geocoded on the next run.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            deleted = self.cache.clear_by_address(normalized_address)
+            # Focus log tab and report
+            if hasattr(self, "subtabs"):
+                self.subtabs.setCurrentIndex(0)
+            if deleted:
+                self.log_append(f"Cleared cache for site {site_id}")
+            else:
+                self.log_append(f"No cache entry found for site {site_id}")
+            
+            # Refresh current state view
+            current = self.state_list.currentItem().text() if self.state_list.currentItem() else ""
+            if current:
+                self._update_state_geocode_status(current)
+        except Exception as e:
+            if hasattr(self, "subtabs"):
+                self.subtabs.setCurrentIndex(0)
+            self.log_append(f"Failed to clear cache for site {site_id}: {e}")

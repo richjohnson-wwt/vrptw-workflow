@@ -1,5 +1,12 @@
 # VRPTW Workflow
 
+    WorkspaceTab: Add/Select Client, Add/Select workspace
+    ParseTab: Excel -> addresses.csv
+    GeocodeTab: addresses.csv -> geocode_tab.py -> geocoded.csv
+    ClusterTab: geocoded.csv -> clustered.csv
+    VRPTWTab: clustered.csv -> solve.py -> solution.csv
+    
+
 ## Setup
 
     uv venv venv
@@ -11,7 +18,6 @@
 ## Cache useful commands
 
     sqlite3 -readonly -cmd ".headers on" -cmd ".mode box" ~/Documents/VRPTW/.cache/nominatim.sqlite "SELECT * FROM addresses LIMIT 50;"
-
 
     sqlite3 -readonly -cmd ".headers on" -cmd ".mode box" ~/Documents/VRPTW/.cache/nominatim.sqlite " SELECT id, normalized_address, latitude, longitude, display_name, updated_at FROM addresses WHERE normalized_address LIKE '%211 S 18th%' OR normalized_address LIKE '%10630 Parallel%' "
 
